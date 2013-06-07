@@ -22,29 +22,44 @@
 #include <poll.h>
 #include <sys/poll.h>
 
-#include "xutils.h"
 #include "built_in.h"
 #include "die.h"
+#include "dev.h"
+
+union tpacket_uhdr {
+	struct tpacket_hdr  *h1;
+	struct tpacket2_hdr *h2;
+	struct tpacket3_hdr *h3;
+	void *raw;
+};
 
 struct frame_map {
 	struct tpacket2_hdr tp_h __aligned_tpacket;
 	struct sockaddr_ll s_ll __align_tpacket(sizeof(struct tpacket2_hdr));
 };
 
+struct block_desc {
+	uint32_t version;
+	uint32_t offset_to_priv;
+	struct tpacket_hdr_v1 h1;
+};
+
 struct ring {
 	struct iovec *frames;
 	uint8_t *mm_space;
 	size_t mm_len;
-	struct tpacket_req layout;
 	struct sockaddr_ll s_ll;
+	union {
+		struct tpacket_req layout;
+		struct tpacket_req3 layout3;
+		uint8_t raw;
+	};
 };
 
 static inline void next_rnd_slot(unsigned int *it, struct ring *ring)
 {
 	*it = rand() % ring->layout.tp_frame_nr;
 }
-
-#define RING_SIZE_FALLBACK (1 << 26)
 
 static inline unsigned int ring_size(char *ifname, unsigned int size)
 {
@@ -65,7 +80,7 @@ static inline unsigned int ring_size(char *ifname, unsigned int size)
 	size = (size * 1000000) / 8;
 	size = size * 2;
 	if (size == 0)
-		size = RING_SIZE_FALLBACK;
+		size = 1 << 26;
 
 	return round_up_cacheline(size);
 }
@@ -73,6 +88,13 @@ static inline unsigned int ring_size(char *ifname, unsigned int size)
 static inline unsigned int ring_frame_size(struct ring *ring)
 {
 	return ring->layout.tp_frame_size;
+}
+
+static inline void ring_verify_layout(struct ring *ring)
+{
+	bug_on(ring->layout.tp_block_size  < ring->layout.tp_frame_size);
+	bug_on((ring->layout.tp_block_size % ring->layout.tp_frame_size) != 0);
+	bug_on((ring->layout.tp_block_size % getpagesize()) != 0);
 }
 
 static inline void tpacket_hdr_clone(struct tpacket2_hdr *thdrd,
@@ -84,16 +106,6 @@ static inline void tpacket_hdr_clone(struct tpacket2_hdr *thdrd,
         thdrd->tp_len = thdrs->tp_len;
 }
 
-#ifndef POLLRDNORM
-# define POLLRDNORM	0x0040
-#endif
-#ifndef POLLWRNORM
-# define POLLWRNORM	0x0100
-#endif
-#ifndef POLLRDHUP
-# define POLLRDHUP	0x2000
-#endif
-
 static inline void prepare_polling(int sock, struct pollfd *pfd)
 {
 	memset(pfd, 0, sizeof(*pfd));
@@ -102,13 +114,42 @@ static inline void prepare_polling(int sock, struct pollfd *pfd)
 	pfd->events = POLLIN | POLLRDNORM | POLLERR;
 }
 
-static inline void set_sockopt_tpacket_v2(int sock)
+static inline void __set_sockopt_tpacket(int sock, int val)
 {
-	int ret, val = TPACKET_V2;
-
-	ret = setsockopt(sock, SOL_PACKET, PACKET_VERSION, &val, sizeof(val));
+	int ret = setsockopt(sock, SOL_PACKET, PACKET_VERSION, &val, sizeof(val));
 	if (ret)
 		panic("Cannot set tpacketv2!\n");
 }
+
+static inline int __get_sockopt_tpacket(int sock)
+{
+	int val, ret;
+	socklen_t len = sizeof(val);
+
+	ret = getsockopt(sock, SOL_PACKET, PACKET_VERSION, &val, &len);
+	if (ret)
+		panic("Cannot get tpacket version!\n");
+
+	return val;
+}
+
+static inline void set_sockopt_tpacket_v2(int sock)
+{
+	__set_sockopt_tpacket(sock, TPACKET_V2);
+}
+
+static inline void set_sockopt_tpacket_v3(int sock)
+{
+	__set_sockopt_tpacket(sock, TPACKET_V3);
+}
+
+static inline int get_sockopt_tpacket(int sock)
+{
+	return __get_sockopt_tpacket(sock);
+}
+
+extern void mmap_ring_generic(int sock, struct ring *ring);
+extern void alloc_ring_frames_generic(struct ring *ring, int num, size_t size);
+extern void bind_ring_generic(int sock, struct ring *ring, int ifindex);
 
 #endif /* RING_H */

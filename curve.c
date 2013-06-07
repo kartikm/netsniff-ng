@@ -19,21 +19,16 @@
 #include "built_in.h"
 #include "xmalloc.h"
 #include "curve.h"
-#include "xutils.h"
-#include "xio.h"
+#include "ioops.h"
+#include "rnd.h"
 #include "die.h"
+#include "str.h"
 #include "curvetun.h"
 #include "locking.h"
-#include "crypto_verify_32.h"
-#include "crypto_box_curve25519xsalsa20poly1305.h"
-#include "crypto_scalarmult_curve25519.h"
+#include "crypto.h"
 
-#define crypto_box_beforenm		crypto_box_curve25519xsalsa20poly1305_beforenm
-#define crypto_box_afternm		crypto_box_curve25519xsalsa20poly1305_afternm
-#define crypto_box_open_afternm		crypto_box_curve25519xsalsa20poly1305_open_afternm
-
-#define NONCE_LENGTH			(sizeof(struct taia))
-#define NONCE_OFFSET			(crypto_box_curve25519xsalsa20poly1305_NONCEBYTES - NONCE_LENGTH)
+#define NONCE_LENGTH	(sizeof(struct taia))
+#define NONCE_OFFSET	(crypto_box_noncebytes - NONCE_LENGTH)
 
 void curve25519_selftest(void)
 {
@@ -259,7 +254,7 @@ ssize_t curve25519_decode(struct curve25519_struct *curve, struct curve25519_pro
 	}
 
 	taia_unpack(chipertext + crypto_box_boxzerobytes - NONCE_LENGTH, &packet_taia);
-        if (is_good_taia(arrival_taia, &packet_taia) == 0) {
+        if (taia_looks_good(arrival_taia, &packet_taia) == 0) {
 		syslog(LOG_ERR, "Bad packet time! Dropping connection!\n");
 		done = 0;
 		goto out;

@@ -12,19 +12,14 @@
 #include <syslog.h>
 
 #include "die.h"
+#include "str.h"
 #include "built_in.h"
 #include "locking.h"
 #include "xmalloc.h"
 #include "curvetun.h"
-#include "xutils.h"
 #include "curve.h"
+#include "crypto.h"
 #include "ct_servmgmt.h"
-#include "crypto_box_curve25519xsalsa20poly1305.h"
-#include "crypto_auth_hmacsha512256.h"
-
-#define crypto_box_pub_key_size crypto_box_curve25519xsalsa20poly1305_PUBLICKEYBYTES
-
-/* Config line format: alias;serverip|servername;port;udp|tcp;pubkey\n */
 
 struct server_store {
 	int udp;

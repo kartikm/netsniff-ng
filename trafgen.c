@@ -10,6 +10,7 @@
 #include <getopt.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <sched.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/fsuid.h>
@@ -21,6 +22,7 @@
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <linux/icmp.h>
+#include <linux/if.h>
 #include <arpa/inet.h>
 #include <signal.h>
 #include <stdint.h>
@@ -34,12 +36,20 @@
 
 #include "xmalloc.h"
 #include "die.h"
+#include "str.h"
+#include "sig.h"
+#include "sock.h"
+#include "cpus.h"
+#include "lockme.h"
+#include "privs.h"
+#include "proc.h"
 #include "mac80211.h"
-#include "xutils.h"
-#include "xio.h"
+#include "ioops.h"
+#include "irq.h"
 #include "built_in.h"
 #include "trafgen_conf.h"
 #include "tprintf.h"
+#include "timer.h"
 #include "ring_tx.h"
 #include "csum.h"
 
@@ -58,7 +68,7 @@ struct cpu_stats {
 	sig_atomic_t state;
 };
 
-sig_atomic_t sigint = 0;
+static sig_atomic_t sigint = 0;
 
 struct packet *packets = NULL;
 size_t plen = 0;
@@ -93,13 +103,9 @@ static const struct option long_options[] = {
 };
 
 static int sock;
-
 static struct itimerval itimer;
-
 static unsigned long interval = TX_KERNEL_PULL_INT;
-
 static struct cpu_stats *stats;
-
 unsigned int seed;
 
 #define CPU_STATS_STATE_CFG	1
@@ -620,7 +626,7 @@ static void xmit_fastpath_or_die(struct ctx *ctx, int cpu, unsigned long orig_nu
 	setup_tx_ring_layout(sock, &tx_ring, size, ctx->jumbo_support);
 	create_tx_ring(sock, &tx_ring, ctx->verbose);
 	mmap_tx_ring(sock, &tx_ring);
-	alloc_tx_ring_frames(&tx_ring);
+	alloc_tx_ring_frames(sock, &tx_ring);
 	bind_tx_ring(sock, &tx_ring, ifindex);
 
 	drop_privileges(ctx->enforce, ctx->uid, ctx->gid);
@@ -1083,6 +1089,7 @@ int main(int argc, char **argv)
 thread_out:
 	xunlockme();
 	destroy_shared_var(stats, ctx.cpus);
+	device_restore_irq_affinity_list();
 
 	free(ctx.device);
 	free(ctx.device_trans);

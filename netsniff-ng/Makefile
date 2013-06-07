@@ -32,8 +32,17 @@ netsniff-ng-objs =	dissector.o \
 			proto_vlan_q_in_q.o \
 			proto_mpls_unicast.o \
 			proto_80211_mac_hdr.o \
-			xio.o \
-			xutils.o \
+			promisc.o \
+			privs.o \
+			proc.o \
+			dev.o \
+			str.o \
+			sig.o \
+			sock.o \
+			irq.o \
+			iosched.o \
+			ioops.o \
+			link.o \
 			xmalloc.o \
 			hash.o \
 			bpf.o \
@@ -44,8 +53,10 @@ netsniff-ng-objs =	dissector.o \
 			pcap_mm.o \
 			ring_rx.o \
 			ring_tx.o \
+			ring.o \
 			tprintf.o \
 			tstamping.o \
+			timer.o \
 			geoip.o \
 			mac80211.o \
 			netsniff-ng.o

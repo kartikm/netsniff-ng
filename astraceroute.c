@@ -33,14 +33,16 @@
 
 #include "bpf.h"
 #include "die.h"
+#include "dev.h"
+#include "sig.h"
 #include "tprintf.h"
 #include "pkt_buff.h"
 #include "proto.h"
 #include "xmalloc.h"
-#include "xio.h"
+#include "ioops.h"
 #include "csum.h"
+#include "sock.h"
 #include "geoip.h"
-#include "xutils.h"
 #include "ring_rx.h"
 #include "built_in.h"
 
@@ -64,7 +66,7 @@ struct proto_ops {
 			int latitude);
 };
 
-sig_atomic_t sigint = 0;
+static sig_atomic_t sigint = 0;
 
 static int assemble_ipv4(uint8_t *packet, size_t len, int ttl, int proto,
 			 const struct ctx *ctx, const struct sockaddr *dst,

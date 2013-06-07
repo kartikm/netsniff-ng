@@ -7,6 +7,8 @@
 #ifndef TX_RING_H
 #define TX_RING_H
 
+#include <stdbool.h>
+
 #include "ring.h"
 #include "built_in.h"
 
@@ -16,10 +18,10 @@
 extern void destroy_tx_ring(int sock, struct ring *ring);
 extern void create_tx_ring(int sock, struct ring *ring, int verbose);
 extern void mmap_tx_ring(int sock, struct ring *ring);
-extern void alloc_tx_ring_frames(struct ring *ring);
+extern void alloc_tx_ring_frames(int sock, struct ring *ring);
 extern void bind_tx_ring(int sock, struct ring *ring, int ifindex);
 extern void setup_tx_ring_layout(int sock, struct ring *ring,
-				 unsigned int size, int jumbo_support);
+				 unsigned int size, bool jumbo_support);
 extern void set_packet_loss_discard(int sock);
 
 static inline int user_may_pull_from_tx(struct tpacket2_hdr *hdr)

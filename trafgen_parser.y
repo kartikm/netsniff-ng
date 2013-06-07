@@ -23,8 +23,8 @@
 #include "trafgen_conf.h"
 #include "built_in.h"
 #include "die.h"
+#include "str.h"
 #include "csum.h"
-#include "xutils.h"
 
 #define YYERROR_VERBOSE		0
 #define YYDEBUG			0

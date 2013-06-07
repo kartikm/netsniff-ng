@@ -1,7 +1,7 @@
 bpfc-libs =
 
 bpfc-objs =	xmalloc.o \
-		xutils.o \
+		str.o \
 		bpf.o \
 		bpf_lexer.yy.o \
 		bpf_parser.tab.o \

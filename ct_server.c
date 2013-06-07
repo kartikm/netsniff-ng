@@ -29,11 +29,15 @@
 #include <linux/if_tun.h>
 
 #include "die.h"
-#include "xutils.h"
-#include "xio.h"
+#include "epoll2.h"
+#include "ioops.h"
 #include "xmalloc.h"
 #include "curvetun.h"
 #include "curve.h"
+#include "ioexact.h"
+#include "corking.h"
+#include "cpus.h"
+#include "sock.h"
 #include "built_in.h"
 #include "ct_usermgmt.h"
 #include "cpusched.h"

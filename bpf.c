@@ -16,8 +16,8 @@
 
 #include "bpf.h"
 #include "xmalloc.h"
-#include "xutils.h"
 #include "die.h"
+#include "str.h"
 
 #define EXTRACT_SHORT(packet)						\
 		((unsigned short) ntohs(*(unsigned short *) packet))

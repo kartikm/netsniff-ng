@@ -1,12 +1,7 @@
-/*
- * netsniff-ng - the packet sniffing beast
- * Copyright 2009-2012 Daniel Borkmann.
- * Parts taken from the Linux kernel, GPL, version 2.
- * Subject to the GPL, version 2.
- */
-
 #ifndef BUILT_IN_H
 #define BUILT_IN_H
+
+/* Parts taken from the Linux kernel, GPL, version 2. */
 
 #include <linux/if_packet.h>
 #include <assert.h>
@@ -151,6 +146,10 @@ typedef uint8_t		u8;
 
 #ifndef build_bug_on_zero
 # define build_bug_on_zero(e)	(sizeof(char[1 - 2 * !!(e)]) - 1)
+#endif
+
+#ifndef build_bug_on
+# define build_bug_on(e)	((void)sizeof(char[1 - 2*!!(e)]))
 #endif
 
 #ifndef bug_on
@@ -351,6 +350,18 @@ static inline u64 cpu_to_le64(u64 val)
 
 #ifndef TP_STATUS_TS_RAW_HARDWARE
 # define TP_STATUS_TS_RAW_HARDWARE	(1 << 31)
+#endif
+
+#ifndef POLLRDNORM
+# define POLLRDNORM			0x0040
+#endif
+
+#ifndef POLLWRNORM
+# define POLLWRNORM			0x0100
+#endif
+
+#ifndef POLLRDHUP
+# define POLLRDHUP			0x2000
 #endif
 
 #endif /* BUILT_IN_H */

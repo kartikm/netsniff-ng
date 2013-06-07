@@ -25,23 +25,20 @@
 #include <unistd.h>
 #include <signal.h>
 
-#include "xutils.h"
 #include "die.h"
+#include "str.h"
+#include "sig.h"
+#include "stun.h"
+#include "cookie.h"
+#include "ioexact.h"
 #include "xmalloc.h"
 #include "curvetun.h"
 #include "curve.h"
 #include "ct_usermgmt.h"
 #include "ct_servmgmt.h"
-#include "xio.h"
+#include "ioops.h"
 #include "tprintf.h"
-#include "crypto_verify_32.h"
-#include "crypto_box_curve25519xsalsa20poly1305.h"
-#include "crypto_scalarmult_curve25519.h"
-#include "crypto_auth_hmacsha512256.h"
-
-#define CURVETUN_ENTROPY_SOURCE	"/dev/random"
-
-extern void print_stun_probe(char *server, uint16_t sport, uint16_t tunport);
+#include "crypto.h"
 
 enum working_mode {
 	MODE_UNKNOW,
@@ -258,19 +255,9 @@ static void create_keypair(char *home)
 	char path[PATH_MAX];
 	const char * errstr = NULL;
 
-	printf("Reading from %s (this may take a while) ...\n", CURVETUN_ENTROPY_SOURCE);
+	printf("Reading from %s (this may take a while) ...\n", HIG_ENTROPY_SOURCE);
 
-	fd = open_or_die(CURVETUN_ENTROPY_SOURCE, O_RDONLY);
-
-	ret = read_exact(fd, secretkey, sizeof(secretkey), 0);
-	if (ret != sizeof(secretkey)) {
-		err = EIO;
-		errstr = "Cannot read from "CURVETUN_ENTROPY_SOURCE"!\n";
-		goto out;
-	}
-
-	close(fd);
-
+	gen_key_bytes(secretkey, sizeof(secretkey));
 	crypto_scalarmult_curve25519_base(publickey, secretkey);
 
 	memset(path, 0, sizeof(path));

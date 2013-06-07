@@ -18,9 +18,13 @@
 #include <time.h>
 
 #include "die.h"
+#include "dev.h"
+#include "sig.h"
+#include "link.h"
 #include "xmalloc.h"
-#include "xutils.h"
-#include "xio.h"
+#include "ioops.h"
+#include "promisc.h"
+#include "cpus.h"
 #include "built_in.h"
 
 struct wifi_stat {
@@ -51,14 +55,10 @@ struct cpu_hit {
 	long long unsigned int irqs_rel, irqs_abs;
 };
 
-volatile sig_atomic_t sigint = 0;
-
+static volatile sig_atomic_t sigint = 0;
 static struct ifstat stats_old, stats_new, stats_delta;
-
 static struct cpu_hit *cpu_hits;
-
 static int stats_loop = 0;
-
 static WINDOW *stats_screen = NULL;
 
 static const char *short_options = "d:t:n:vhclp";
@@ -583,11 +583,11 @@ static int cmp_irqs_abs(const void *p1, const void *p2)
 }
 
 static void stats_top(const struct ifstat *rel, const struct ifstat *abs,
-		      int cpus)
+		      int top_cpus)
 {
 	int i;
 
-	for (i = 0; i < cpus; ++i) {
+	for (i = 0; i < top_cpus; ++i) {
 		cpu_hits[i].idx = i;
 		cpu_hits[i].hit = rel->cpu_user[i] + rel->cpu_nice[i] + rel->cpu_sys[i];
 		cpu_hits[i].irqs_rel = rel->irqs[i];
@@ -618,6 +618,7 @@ static void screen_header(WINDOW *screen, const char *ifname, int *voff,
 	struct ethtool_drvinfo drvinf;
 	u32 rate = device_bitrate(ifname);
 	int link = ethtool_link(ifname);
+	unsigned int cpus = get_number_cpus();
 
 	memset(&drvinf, 0, sizeof(drvinf));
 	ethtool_drvinf(ifname, &drvinf);
@@ -630,9 +631,10 @@ static void screen_header(WINDOW *screen, const char *ifname, int *voff,
 				link == 0 ? "no" : "yes");
 
 	mvwprintw(screen, (*voff)++, 2,
-		  "Kernel net/sys statistics for %s (%s%s), t=%lums, cpus=%u/%u"
+		  "Kernel net/sys statistics for %s (%s%s), t=%lums, cpus=%u%s/%u"
 		  "               ",
-		  ifname, drvinf.driver, buff, ms_interval, top_cpus, get_number_cpus());
+		  ifname, drvinf.driver, buff, ms_interval, top_cpus,
+		  top_cpus > 0 && top_cpus < cpus ? "+1" : "", cpus);
 }
 
 static void screen_net_dev_rel(WINDOW *screen, const struct ifstat *rel,
@@ -692,63 +694,109 @@ static void screen_sys_mem(WINDOW *screen, const struct ifstat *rel,
 		  abs->procs_run, abs->procs_iow);
 }
 
+static void screen_percpu_states_one(WINDOW *screen, const struct ifstat *rel,
+				     int *voff, unsigned int idx, char *tag)
+{
+	int max_padd = padding_from_num(get_number_cpus());
+	uint64_t all = rel->cpu_user[idx] + rel->cpu_nice[idx] + rel->cpu_sys[idx] +
+		       rel->cpu_idle[idx] + rel->cpu_iow[idx];
+
+	mvwprintw(screen, (*voff)++, 2,
+		  "cpu%*d%s:%s %13.1lf%% usr/t "
+			  "%9.1lf%% sys/t "
+			  "%10.1lf%% idl/t "
+			  "%11.1lf%% iow/t  ", max_padd, idx,
+		  tag, strlen(tag) == 0 ? " " : "",
+		  100.0 * (rel->cpu_user[idx] + rel->cpu_nice[idx]) / all,
+		  100.0 * rel->cpu_sys[idx] / all,
+		  100.0 * rel->cpu_idle[idx] / all,
+		  100.0 * rel->cpu_iow[idx] / all);
+}
+
 static void screen_percpu_states(WINDOW *screen, const struct ifstat *rel,
-				 int cpus, int *voff)
+				 int top_cpus, int *voff)
 {
 	int i;
-	uint64_t all;
+	int cpus = get_number_cpus();
+
+	if (top_cpus == 0)
+		return;
+
+	/* Display top hitter */
+	screen_percpu_states_one(screen, rel, voff, cpu_hits[0].idx, "+");
+
+	/* Make sure we don't display the min. hitter twice */
+	if (top_cpus == cpus)
+		top_cpus--;
+
+	for (i = 1; i < top_cpus; ++i)
+		screen_percpu_states_one(screen, rel, voff, cpu_hits[i].idx, "");
+
+	/* Display minimum hitter */
+	if (cpus != 1)
+		screen_percpu_states_one(screen, rel, voff, cpu_hits[cpus - 1].idx, "-");
+}
+
+static void screen_percpu_irqs_rel_one(WINDOW *screen, const struct ifstat *rel,
+				       int *voff, unsigned int idx, char *tag)
+{
 	int max_padd = padding_from_num(get_number_cpus());
 
-	for (i = 0; i < cpus; ++i) {
-		unsigned int idx = cpu_hits[i].idx;
-
-		all = rel->cpu_user[idx] + rel->cpu_nice[idx] + rel->cpu_sys[idx] +
-		      rel->cpu_idle[idx] + rel->cpu_iow[idx];
-
-		mvwprintw(screen, (*voff)++, 2,
-			  "cpu%*d: %13.1lf%% usr/t "
-				  "%9.1lf%% sys/t "
-				  "%10.1lf%% idl/t "
-				  "%11.1lf%% iow/t  ", max_padd, idx,
-			  100.0 * (rel->cpu_user[idx] + rel->cpu_nice[idx]) / all,
-			  100.0 * rel->cpu_sys[idx] / all,
-			  100.0 * rel->cpu_idle[idx] / all,
-			  100.0 * rel->cpu_iow[idx] / all);
-	}
+	mvwprintw(screen, (*voff)++, 2,
+		  "cpu%*d%s:%s %14llu irqs/t   "
+			  "%15llu sirq rx/t   "
+			  "%15llu sirq tx/t      ", max_padd, idx,
+		  tag, strlen(tag) == 0 ? " " : "",
+		  rel->irqs[idx],
+		  rel->irqs_srx[idx],
+		  rel->irqs_stx[idx]);
 }
 
 static void screen_percpu_irqs_rel(WINDOW *screen, const struct ifstat *rel,
-				   int cpus, int *voff)
+				   int top_cpus, int *voff)
 {
 	int i;
+	int cpus = get_number_cpus();
+
+	screen_percpu_irqs_rel_one(screen, rel, voff, cpu_hits[0].idx, "+");
+
+	if (top_cpus == cpus)
+		top_cpus--;
+
+	for (i = 1; i < top_cpus; ++i)
+		screen_percpu_irqs_rel_one(screen, rel, voff, cpu_hits[i].idx, "");
+
+	if (cpus != 1)
+		screen_percpu_irqs_rel_one(screen, rel, voff, cpu_hits[cpus - 1].idx, "-");
+}
+
+static void screen_percpu_irqs_abs_one(WINDOW *screen, const struct ifstat *abs,
+				       int *voff, unsigned int idx, char *tag)
+{
 	int max_padd = padding_from_num(get_number_cpus());
 
-	for (i = 0; i < cpus; ++i) {
-		unsigned int idx = cpu_hits[i].idx;
-
-		mvwprintw(screen, (*voff)++, 2,
-			  "cpu%*d: %14llu irqs/t   "
-				  "%15llu sirq rx/t   "
-				  "%15llu sirq tx/t      ", max_padd, idx,
-			  rel->irqs[idx],
-			  rel->irqs_srx[idx],
-			  rel->irqs_stx[idx]);
-	}
+	mvwprintw(screen, (*voff)++, 2,
+		  "cpu%*d%s:%s %14llu irqs", max_padd, idx,
+		  tag, strlen(tag) == 0 ? " " : "",
+		  abs->irqs[idx]);
 }
 
 static void screen_percpu_irqs_abs(WINDOW *screen, const struct ifstat *abs,
-				   int cpus, int *voff)
+				   int top_cpus, int *voff)
 {
 	int i;
-	int max_padd = padding_from_num(get_number_cpus());
+	int cpus = get_number_cpus();
 
-	for (i = 0; i < cpus; ++i) {
-		unsigned int idx = cpu_hits[i].idx;
+	screen_percpu_irqs_abs_one(screen, abs, voff, cpu_hits[0].idx, "+");
 
-		mvwprintw(screen, (*voff)++, 2,
-			  "cpu%*d: %14llu irqs", max_padd, idx,
-			  abs->irqs[idx]);
-	}
+	if (top_cpus == cpus)
+		top_cpus--;
+
+	for (i = 1; i < top_cpus; ++i)
+		screen_percpu_irqs_abs_one(screen, abs, voff, cpu_hits[i].idx, "");
+
+	if (cpus != 1)
+		screen_percpu_irqs_abs_one(screen, abs, voff, cpu_hits[cpus - 1].idx, "-");
 }
 
 static void screen_wireless(WINDOW *screen, const struct ifstat *rel,
@@ -1033,6 +1081,8 @@ int main(int argc, char **argv)
 			break;
 		case 'n':
 			top_cpus = strtoul(optarg, NULL, 10);
+			if (top_cpus < 1)
+				panic("Number of top hitter CPUs must be greater than 0");
 			break;
 		case 'l':
 			stats_loop = 1;

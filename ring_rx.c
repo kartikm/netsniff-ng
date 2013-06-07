@@ -22,48 +22,69 @@
 void destroy_rx_ring(int sock, struct ring *ring)
 {
 	int ret;
+	bool v3 = get_sockopt_tpacket(sock) == TPACKET_V3;
 
 	munmap(ring->mm_space, ring->mm_len);
 	ring->mm_len = 0;
+
+	xfree(ring->frames);
+
+	/* In general, this is freed during close(2) anyway. */
+	if (v3)
+		return;
 
 	fmemset(&ring->layout, 0, sizeof(ring->layout));
 	ret = setsockopt(sock, SOL_PACKET, PACKET_RX_RING, &ring->layout,
 			 sizeof(ring->layout));
 	if (unlikely(ret))
 		panic("Cannot destroy the RX_RING: %s!\n", strerror(errno));
-
-	xfree(ring->frames);
 }
 
 void setup_rx_ring_layout(int sock, struct ring *ring, unsigned int size,
-			  int jumbo_support)
+			  bool jumbo_support, bool v3)
 {
 	fmemset(&ring->layout, 0, sizeof(ring->layout));
 
 	ring->layout.tp_block_size = (jumbo_support ?
 				      getpagesize() << 4 :
 				      getpagesize() << 2);
+
 	ring->layout.tp_frame_size = (jumbo_support ?
 				      TPACKET_ALIGNMENT << 12 :
 				      TPACKET_ALIGNMENT << 7);
+
 	ring->layout.tp_block_nr = size / ring->layout.tp_block_size;
 	ring->layout.tp_frame_nr = ring->layout.tp_block_size /
 				   ring->layout.tp_frame_size *
 				   ring->layout.tp_block_nr;
+	if (v3) {
+		/* Pass out, if this will ever change and we do crap on it! */
+		build_bug_on(offsetof(struct tpacket_req, tp_frame_nr) !=
+			     offsetof(struct tpacket_req3, tp_frame_nr) &&
+			     sizeof(struct tpacket_req) !=
+			     offsetof(struct tpacket_req3, tp_retire_blk_tov));
 
-	bug_on(ring->layout.tp_block_size < ring->layout.tp_frame_size);
-	bug_on((ring->layout.tp_block_size % ring->layout.tp_frame_size) != 0);
-	bug_on((ring->layout.tp_block_size % getpagesize()) != 0);
+		ring->layout3.tp_retire_blk_tov = 100; /* 0: let kernel decide */
+		ring->layout3.tp_sizeof_priv = 0;
+		ring->layout3.tp_feature_req_word = 0;
+
+		set_sockopt_tpacket_v3(sock);
+	} else {
+		set_sockopt_tpacket_v2(sock);
+	}
+
+	ring_verify_layout(ring);
 }
 
 void create_rx_ring(int sock, struct ring *ring, int verbose)
 {
 	int ret;
+	bool v3 = get_sockopt_tpacket(sock) == TPACKET_V3;
 
-	set_sockopt_tpacket_v2(sock);
 retry:
-	ret = setsockopt(sock, SOL_PACKET, PACKET_RX_RING, &ring->layout,
-			 sizeof(ring->layout));
+	ret = setsockopt(sock, SOL_PACKET, PACKET_RX_RING, &ring->raw,
+			 v3 ? sizeof(ring->layout3) : sizeof(ring->layout));
+
 	if (errno == ENOMEM && ring->layout.tp_block_nr > 1) {
 		ring->layout.tp_block_nr >>= 1;
 		ring->layout.tp_frame_nr = ring->layout.tp_block_size / 
@@ -71,7 +92,6 @@ retry:
 					   ring->layout.tp_block_nr;
 		goto retry;
 	}
-
 	if (ret < 0)
 		panic("Cannot allocate RX_RING!\n");
 
@@ -86,49 +106,52 @@ retry:
 
 void mmap_rx_ring(int sock, struct ring *ring)
 {
-	ring->mm_space = mmap(0, ring->mm_len, PROT_READ | PROT_WRITE,
-			      MAP_SHARED | MAP_LOCKED | MAP_POPULATE, sock, 0);
-	if (ring->mm_space == MAP_FAILED) {
-		destroy_rx_ring(sock, ring);
-		panic("Cannot mmap RX_RING!\n");
-	}
+	mmap_ring_generic(sock, ring);
 }
 
-void alloc_rx_ring_frames(struct ring *ring)
+void alloc_rx_ring_frames(int sock, struct ring *ring)
 {
-	int i;
-	size_t len = ring->layout.tp_frame_nr * sizeof(*ring->frames);
+	int num;
+	size_t size;
+	bool v3 = get_sockopt_tpacket(sock) == TPACKET_V3;
 
-	ring->frames = xmalloc_aligned(len, CO_CACHE_LINE_SIZE);
-	fmemset(ring->frames, 0, len);
-
-	for (i = 0; i < ring->layout.tp_frame_nr; ++i) {
-		ring->frames[i].iov_len = ring->layout.tp_frame_size;
-		ring->frames[i].iov_base = ring->mm_space +
-					   (i * ring->layout.tp_frame_size);
+	if (v3) {
+		num = ring->layout3.tp_block_nr;
+		size = ring->layout3.tp_block_size;
+	} else {
+		num = ring->layout.tp_frame_nr;
+		size = ring->layout.tp_frame_size;
 	}
+
+	alloc_ring_frames_generic(ring, num, size);
 }
 
 void bind_rx_ring(int sock, struct ring *ring, int ifindex)
 {
+	bind_ring_generic(sock, ring, ifindex);
+}
+
+void sock_rx_net_stats(int sock)
+{
 	int ret;
-	/*
-	 * The RX_RING registers itself to the networking stack with
-	 * dev_add_pack(), so we have one single RX_RING for all devs
-	 * otherwise you'll get the packet twice.
-	 */
-	fmemset(&ring->s_ll, 0, sizeof(ring->s_ll));
+	bool v3 = get_sockopt_tpacket(sock) == TPACKET_V3;
+	union {
+		struct tpacket_stats	k2;
+		struct tpacket_stats_v3 k3;
+	} stats;
+	socklen_t slen = v3 ? sizeof(stats.k3) : sizeof(stats.k2);
 
-	ring->s_ll.sll_family = AF_PACKET;
-	ring->s_ll.sll_protocol = htons(ETH_P_ALL);
-	ring->s_ll.sll_ifindex = ifindex;
-	ring->s_ll.sll_hatype = 0;
-	ring->s_ll.sll_halen = 0;
-	ring->s_ll.sll_pkttype = 0;
+	memset(&stats, 0, sizeof(stats));
+	ret = getsockopt(sock, SOL_PACKET, PACKET_STATISTICS, &stats, &slen);
+	if (ret > -1) {
+		uint64_t packets = stats.k3.tp_packets;
+		uint64_t drops = stats.k3.tp_drops;
 
-	ret = bind(sock, (struct sockaddr *) &ring->s_ll, sizeof(ring->s_ll));
-	if (ret < 0) {
-		destroy_rx_ring(sock, ring);
-		panic("Cannot bind RX_RING!\n");
+		printf("\r%12ld  packets incoming\n", packets);
+		printf("\r%12ld  packets passed filter\n", packets - drops);
+		printf("\r%12ld  packets failed filter (out of space)\n", drops);
+		if (stats.k3.tp_packets > 0)
+			printf("\r%12.4lf%\% packet droprate\n",
+			       (1.0 * drops / packets) * 100.0);
 	}
 }

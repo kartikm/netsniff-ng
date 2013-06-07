@@ -6,9 +6,13 @@ flowtop-libs =	-lGeoIP \
 		-lz
 
 flowtop-objs =	xmalloc.o \
-		xio.o \
-		xutils.o \
+		ioops.o \
 		oui.o \
+		str.o \
+		sig.o \
+		sock.o \
+		dev.o \
+		link.o \
 		hash.o \
 		dissector_eth.o \
 		dissector_80211.o \

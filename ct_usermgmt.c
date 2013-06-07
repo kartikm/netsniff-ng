@@ -18,19 +18,13 @@
 #include "ct_usermgmt.h"
 #include "locking.h"
 #include "xmalloc.h"
-#include "xio.h"
+#include "ioexact.h"
+#include "ioops.h"
+#include "str.h"
 #include "curvetun.h"
-#include "xutils.h"
 #include "curve.h"
+#include "crypto.h"
 #include "hash.h"
-#include "crypto_verify_32.h"
-#include "crypto_hash_sha512.h"
-#include "crypto_box_curve25519xsalsa20poly1305.h"
-#include "crypto_auth_hmacsha512256.h"
-
-#define crypto_box_pub_key_size crypto_box_curve25519xsalsa20poly1305_PUBLICKEYBYTES
-
-/* Config line format: username;pubkey\n */
 
 struct user_store {
 	char username[256];
