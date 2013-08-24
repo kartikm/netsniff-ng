@@ -15,7 +15,6 @@
 #include <arpa/inet.h>
 
 #include "die.h"
-#include "ct_usermgmt.h"
 #include "locking.h"
 #include "xmalloc.h"
 #include "ioexact.h"
@@ -24,6 +23,7 @@
 #include "curvetun.h"
 #include "curve.h"
 #include "crypto.h"
+#include "curvetun_mgmt_users.h"
 #include "hash.h"
 
 struct user_store {
@@ -194,7 +194,6 @@ enum parse_states {
 
 static int parse_line(char *line, char *homedir)
 {
-	int ret;
 	char *str;
 	enum parse_states s = PARSE_USERNAME;
 	struct user_store *elem;
@@ -219,12 +218,7 @@ static int parse_line(char *line, char *homedir)
 			if (__check_duplicate_pubkey(pkey, sizeof(pkey)))
 				return -EINVAL;
 			memcpy(elem->publickey, pkey, sizeof(elem->publickey));
-			ret = curve25519_proto_init(&elem->proto_inf,
-					 	    elem->publickey,
-						    sizeof(elem->publickey),
-						    homedir, 1);
-			if (ret)
-				return -EIO;
+			curve25519_proto_init(&elem->proto_inf, elem->publickey, sizeof(elem->publickey));
 			s = PARSE_DONE;
 			break;
 		case PARSE_DONE:

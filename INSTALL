@@ -11,27 +11,31 @@ A note for distribution package maintainers can be found at the end of the file.
 
 What additional tools next to your build-chain are required?
 
- - ccache, pkg-config, gpg (optional)
- - flex, bison (bpfc, trafgen)
+ - ccache (optional)
+ - gpg (optional)
+
+ - pkg-config:		   all
+ - flex, bison:		   bpfc, trafgen
 
 What libraries are required?
 
- - libncurses (ifpps, flowtop)
- - libGeoIP >=1.4.8 (astraceroute, flowtop, netsniff-ng)
- - libz (astraceroute, flowtop, netsniff-ng)
- - libnacl (curvetun)
- - libnetfilter-conntrack (flowtop)
- - libpcap (netsniff-ng [for tcpdump-like filters], mausezahn)
- - liburcu (flowtop)
- - libnl3 (netsniff-ng, trafgen)
- - libcli (mausezahn)
- - libnet (mausezahn)
+ - libncurses:		   ifpps, flowtop
+ - libGeoIP >=1.4.8:	   astraceroute, flowtop, netsniff-ng
+ - libz:		   astraceroute, flowtop, netsniff-ng
+ - libnacl:		   curvetun
+ - libnetfilter-conntrack: flowtop
+ - libpcap:		   mausezahn, netsniff-ng (tcpdump-like filters)
+ - liburcu:		   flowtop
+ - libnl3:		   netsniff-ng, trafgen
+ - libcli:		   mausezahn
+ - libnet:		   mausezahn
 
-What additional tools are recommended after the build?
+What additional tools are recommended, but not mandatory after the build?
 
- - cpp (trafgen)
- - ntpd (curvetun)
- - setcap (all)
+ - cpp:			   trafgen
+ - ntpd:		   curvetun
+ - gnuplot:		   ifpps
+ - setcap:		   all
 
 It is common, that these libraries are shipped as distribution packages
 for an easy installation. We try to keep this as minimal as possible.
@@ -44,7 +48,7 @@ One-liner installation for *all* dependencies on Debian:
   zlib1g-dev libcli-dev libnet1-dev
 
 One-liner installation for *all* dependencies on Fedora:
- 
+
   $ sudo yum install ccache flex bison ccache libnl3-devel \
   GeoIP-devel libnetfilter_conntrack-devel ncurses-devel \
   userspace-rcu-devel nacl-devel libpcap-devel zlib-devel \
@@ -55,22 +59,32 @@ repository root directory:
 
   $ cd netsniff-ng/
 
-The installation (deinstallation) process done by make is fairly simple:
+The installation (deinstallation) process is fairly simple:
 
+  $ ./configure
   $ make
   # make install
 
-  (# make distclean)
-  ($ make clean)
-  (or for both at once: # make mrproper)
+  (# make uninstall)
 
-You can also build only a particular tool, e.g.:
-  
+In order to remove all build files from the source tree:
+
+  $ make clean
+
+In any case "make help" will give you some pointers of what can be done.
+To bring the source tree into a pristine state, there are two options.
+The first one will remove all build and build config file, the latter will
+also remove any manually added files:
+
+  $ make distclean
+  ($ make mrproper)
+
+You can also build/install/uninstall only a particular tool, e.g.:
+
   $ make trafgen
   # make trafgen_install
 
-  (# make trafgen_distclean)
-  ($ make trafgen_clean)
+  (# make trafgen_uninstall)
 
 If you want to build all tools, but {curvetun,mausezahn} (i.e. because you
 don't need the tunneling software and the NaCl build process lasts quite long):
@@ -78,7 +92,7 @@ don't need the tunneling software and the NaCl build process lasts quite long):
   $ make allbutcurvetun               (allbutmausezahn)
   # make install_allbutcurvetun       (install_allbutmausezahn)
 
-  (# make mrproper)
+  (# make uninstall)
 
 In order to build curvetun, libnacl must be built first. A helper script
 called nacl_build.sh is there to facilitate this process. If you want to
@@ -139,21 +153,34 @@ symbols, do:
 
   $ make DEBUG=1
 
-For debugging the build system, full commands are shown if every make target is
-executed with:
+For debugging the build system, actual commands are verbosly shown if every
+make target is executed with:
 
   $ make Q=
 
 Concerning packaging the toolkit for a Linux distribution, by default,
 netsniff-ng has some architecture-specific tuning options enabled that don't
-belong into a package binary of a distribution. Hence, you might want to adapt
-some build-related things before starting to package the toolkit. All
-necessary things (e.g., CFLAGS,WFLAGS) can be found in Makefile. Hence,
-you need to adapt it there. You can then build and install the toolkit into
-a prefixed path like:
+belong into a package binary of a distribution. Hence, you might want to build
+the toolkit with:
+
+  $ make DISTRO=1
+
+A hardening option is also available via HARDENING=1 if needed. You can then
+build and install the toolkit into prefixed path like:
 
   $ make PREFIX=<path-prefix-for-package>
   $ make PREFIX=<path-prefix-for-package> install
 
-Thanks for maintaining netsniff-ng in your distribution. Further questions
-will be answered on the public mainling list.
+Thanks for maintaining netsniff-ng in your distribution. Further questions will
+be answered on the public mailing list.
+
+Last but not least, there is one small utility for advanced users that we have
+not integrated into the main build process. This is a minimal BPF JIT image
+disassembler for the Linux kernel. You can also find this tool in the Linux
+kernel Git tree under 'tools/net/bpf_jit_disasm.c' or within the netsniff-ng
+Git tree simply under 'bpf_jit_disasm.c'. To build it, execute:
+
+    $ gcc -Wall -O2 bpf_jit_disasm.c -o bpf_jit_disasm -lopcodes -lbfd -ldl
+
+The rest is described in the file header comment itself, i.e. how to get to the
+BPF JIT code.

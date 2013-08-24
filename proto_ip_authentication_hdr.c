@@ -26,8 +26,7 @@ struct auth_hdr {
 
 static void auth_hdr(struct pkt_buff *pkt)
 {
-	ssize_t hdr_len;
-	size_t i;
+	size_t i, hdr_len;
 	struct auth_hdr *auth_ops;
 
 	auth_ops = (struct auth_hdr *) pkt_pull(pkt, sizeof(*auth_ops));
@@ -38,7 +37,7 @@ static void auth_hdr(struct pkt_buff *pkt)
 
 	tprintf(" [ Authentication Header ");
 	tprintf("NextHdr (%u), ", auth_ops->h_next_header);
-	if (hdr_len > pkt_len(pkt) || hdr_len < 0){
+	if (hdr_len > pkt_len(pkt)) {
 		tprintf("HdrLen (%u, %zd Bytes %s), ",
 		      auth_ops->h_payload_len, hdr_len,
 		      colorize_start_full(black, red)
@@ -54,8 +53,17 @@ static void auth_hdr(struct pkt_buff *pkt)
 	tprintf("SPI (0x%x), ", ntohl(auth_ops->h_spi));
 	tprintf("SNF (0x%x), ", ntohl(auth_ops->h_snf));
 	tprintf("ICV 0x");
-	for (i = sizeof(struct auth_hdr); i < hdr_len; i++)
-		tprintf("%02x", *pkt_pull(pkt, 1));
+	for (i = sizeof(struct auth_hdr); i < hdr_len; i++) {
+		uint8_t *data = pkt_pull(pkt, 1);
+
+		if (data == NULL) {
+			tprintf("%sinvalid%s", colorize_start_full(black, red),
+				colorize_end());
+			break;
+		}
+
+		tprintf("%02x", *data);
+	}
 	tprintf(" ]\n");
 
 	pkt_set_proto(pkt, &eth_lay3, auth_ops->h_next_header);

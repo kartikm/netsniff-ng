@@ -35,7 +35,7 @@ struct port {
 		while (entry && id != entry->id)			\
 			entry = entry->next;				\
 									\
-		(entry && id == entry->id ? entry->struct_member : 0);	\
+		(entry && id == entry->id ? entry->struct_member : NULL); \
 	})
 
 char *lookup_port_udp(unsigned int id)
@@ -53,7 +53,7 @@ char *lookup_ether_type(unsigned int id)
 	return __do_lookup_inline(id, port, &eth_ether_types, port);
 }
 
-#ifdef __WITH_PROTOS
+#ifdef HAVE_DISSECTOR_PROTOS
 static inline void dissector_init_entry(int type)
 {
 	dissector_set_print_type(&ethernet_ops, type);
@@ -97,11 +97,11 @@ static void dissector_init_layer_3(int type)
 	for_each_hash_int(&eth_lay3, dissector_set_print_type, type);
 }
 #else
-static inline void dissector_init_entry(int type) {}
-static inline void dissector_init_exit(int type) {}
-static void dissector_init_layer_2(int type) {}
-static void dissector_init_layer_3(int type) {}
-#endif /* __WITH_PROTOS */
+static inline void dissector_init_entry(int type __maybe_unused) {}
+static inline void dissector_init_exit(int type __maybe_unused) {}
+static void dissector_init_layer_2(int type __maybe_unused) {}
+static void dissector_init_layer_3(int type __maybe_unused) {}
+#endif
 
 enum ports {
 	PORTS_UDP,
@@ -112,7 +112,7 @@ enum ports {
 static void dissector_init_ports(enum ports which)
 {
 	FILE *fp;
-	char buff[128], *ptr, *file;
+	char buff[128], *ptr, *file, *end;
 	struct hash_table *table;
 	struct port *p;
 	void **pos;
@@ -145,10 +145,21 @@ static void dissector_init_ports(enum ports which)
 		ptr = buff;
 
 		p = xmalloc(sizeof(*p));
-		p->id = strtol(ptr, &ptr, 0);
+		p->id = strtol(ptr, &end, 0);
+		/* not a valid line, skip */
+		if (p->id == 0 && end == ptr) {
+			xfree(p);
+			continue;
+		}
 
-		if ((ptr = strstr(buff, ", ")))
-			ptr += strlen(", ");
+		ptr = strstr(buff, ", ");
+		/* likewise */
+		if (!ptr) {
+			xfree(p);
+			continue;
+		}
+
+		ptr += strlen(", ");
 		ptr = strtrim_right(ptr, '\n');
 		ptr = strtrim_right(ptr, ' ');
 

@@ -46,6 +46,7 @@
 #include "mac80211.h"
 #include "ioops.h"
 #include "irq.h"
+#include "config.h"
 #include "built_in.h"
 #include "trafgen_conf.h"
 #include "tprintf.h"
@@ -55,7 +56,8 @@
 
 struct ctx {
 	bool rand, rfraw, jumbo_support, verbose, smoke_test, enforce;
-	unsigned long kpull, num, gap, reserve_size, cpus;
+	unsigned long kpull, num, gap, reserve_size;
+	unsigned int cpus;
 	uid_t uid; gid_t gid; char *device, *device_trans, *rhost;
 	struct sockaddr_in dest;
 };
@@ -76,7 +78,7 @@ size_t plen = 0;
 struct packet_dyn *packet_dyn = NULL;
 size_t dlen = 0;
 
-static const char *short_options = "d:c:n:t:vJhS:rk:i:o:VRs:P:eE:pu:g:";
+static const char *short_options = "d:c:n:t:vJhS:rk:i:o:VRs:P:eE:pu:g:C";
 static const struct option long_options[] = {
 	{"dev",			required_argument,	NULL, 'd'},
 	{"out",			required_argument,	NULL, 'o'},
@@ -92,6 +94,7 @@ static const struct option long_options[] = {
 	{"user",		required_argument,	NULL, 'u'},
 	{"group",		required_argument,	NULL, 'g'},
 	{"jumbo-support",	no_argument,		NULL, 'J'},
+	{"no-cpu-stats",	no_argument,		NULL, 'C'},
 	{"cpp",			no_argument,		NULL, 'p'},
 	{"rfraw",		no_argument,		NULL, 'R'},
 	{"rand",		no_argument,		NULL, 'r'},
@@ -106,7 +109,7 @@ static int sock;
 static struct itimerval itimer;
 static unsigned long interval = TX_KERNEL_PULL_INT;
 static struct cpu_stats *stats;
-unsigned int seed;
+static unsigned int seed;
 
 #define CPU_STATS_STATE_CFG	1
 #define CPU_STATS_STATE_CHK	2
@@ -131,7 +134,7 @@ static void signal_handler(int number)
 	}
 }
 
-static void timer_elapsed(int number)
+static void timer_elapsed(int unused __maybe_unused)
 {
 	int ret = pull_and_flush_tx_ring(sock);
 	if (unlikely(ret < 0)) {
@@ -185,6 +188,7 @@ static void __noreturn help(void)
 	     "  -u|--user <userid>             Drop privileges and change to userid\n"
 	     "  -g|--group <groupid>           Drop privileges and change to groupid\n"
 	     "  -V|--verbose                   Be more verbose\n"
+	     "  -C|--no-cpu-stats              Do not print CPU time statistics on exit\n"
 	     "  -v|--version                   Show version and exit\n"
 	     "  -e|--example                   Show built-in packet config example\n"
 	     "  -h|--help                      Guess what?!\n\n"
@@ -240,7 +244,7 @@ static void __noreturn example(void)
 	"  /* IPv4 Version, IHL, TOS */\n"
 	"  0b01000101, 0,\n"
 	"  /* IPv4 Total Len */\n"
-	"  c16(58),\n"
+	"  c16(59),\n"
 	"  /* IPv4 Ident */\n"
 	"  drnd(2),\n"
 	"  /* IPv4 Flags, Frag Off */\n"
@@ -281,8 +285,9 @@ static void __noreturn example(void)
 
 static void __noreturn version(void)
 {
-	printf("\ntrafgen %s, multithreaded zero-copy network packet generator\n", VERSION_LONG);
-	puts("http://www.netsniff-ng.org\n\n"
+	printf("\ntrafgen %s, Git id: %s\n", VERSION_LONG, GITVERSION);
+	puts("multithreaded zero-copy network packet generator\n"
+	     "http://www.netsniff-ng.org\n\n"
 	     "Please report bugs to <bugs@netsniff-ng.org>\n"
 	     "Copyright (C) 2011-2013 Daniel Borkmann <dborkma@tik.ee.ethz.ch>,\n"
 	     "Swiss federal institute of technology (ETH Zurich)\n"
@@ -292,14 +297,13 @@ static void __noreturn version(void)
 	die();
 }
 
-static void apply_counter(int counter_id)
+static void apply_counter(int id)
 {
-	int j, i = counter_id;
-	size_t counter_max = packet_dyn[i].clen;
+	size_t j, counter_max = packet_dyn[id].clen;
 
 	for (j = 0; j < counter_max; ++j) {
 		uint8_t val;
-		struct counter *counter = &packet_dyn[i].cnt[j];
+		struct counter *counter = &packet_dyn[id].cnt[j];
 
 		val = counter->val - counter->min;
 
@@ -315,66 +319,68 @@ static void apply_counter(int counter_id)
 		}
 
 		counter->val = val + counter->min;
-		packets[i].payload[counter->off] = val;
+		packets[id].payload[counter->off] = val;
 	}
 }
 
-static void apply_randomizer(int rand_id)
+static void apply_randomizer(int id)
 {
-	int j, i = rand_id;
-	size_t rand_max = packet_dyn[i].rlen;
+	size_t j, rand_max = packet_dyn[id].rlen;
 
 	for (j = 0; j < rand_max; ++j) {
 		uint8_t val = (uint8_t) rand();
-		struct randomizer *randomizer = &packet_dyn[i].rnd[j];
+		struct randomizer *randomizer = &packet_dyn[id].rnd[j];
 
-		packets[i].payload[randomizer->off] = val;
+		packets[id].payload[randomizer->off] = val;
 	}
 }
 
-static void apply_csum16(int csum_id)
+static void apply_csum16(int id)
 {
-	int j, i = csum_id;
-	size_t csum_max = packet_dyn[i].slen;
+	size_t j, csum_max = packet_dyn[id].slen;
 
 	for (j = 0; j < csum_max; ++j) {
 		uint16_t sum = 0;
-		struct csum16 *csum = &packet_dyn[i].csum[j];
+		struct csum16 *csum = &packet_dyn[id].csum[j];
 
-		fmemset(&packets[i].payload[csum->off], 0, sizeof(sum));
+		fmemset(&packets[id].payload[csum->off], 0, sizeof(sum));
+		if (unlikely((size_t) csum->to >= packets[id].len))
+			csum->to = packets[id].len - 1;
 
 		switch (csum->which) {
 		case CSUM_IP:
-			if (csum->to >= packets[i].len)
-				csum->to = packets[i].len - 1;
-			sum = calc_csum(packets[i].payload + csum->from,
+			sum = calc_csum(packets[id].payload + csum->from,
 					csum->to - csum->from + 1, 0);
 			break;
 		case CSUM_UDP:
-			sum = p4_csum((void *) packets[i].payload + csum->from,
-				      packets[i].payload + csum->to,
-				      (packets[i].len - csum->to),
+			sum = p4_csum((void *) packets[id].payload + csum->from,
+				      packets[id].payload + csum->to,
+				      (packets[id].len - csum->to),
 				      IPPROTO_UDP);
 			break;
 		case CSUM_TCP:
-			sum = p4_csum((void *) packets[i].payload + csum->from,
-				      packets[i].payload + csum->to,
-				      (packets[i].len - csum->to),
+			sum = p4_csum((void *) packets[id].payload + csum->from,
+				      packets[id].payload + csum->to,
+				      (packets[id].len - csum->to),
 				      IPPROTO_TCP);
+			break;
+		default:
+			bug();
 			break;
 		}
 
-		fmemcpy(&packets[i].payload[csum->off], &sum, sizeof(sum));
+		fmemcpy(&packets[id].payload[csum->off], &sum, sizeof(sum));
 	}
 }
 
 static struct cpu_stats *setup_shared_var(unsigned long cpus)
 {
 	int fd;
-	char zbuff[cpus * sizeof(struct cpu_stats)], file[256];
+	size_t len = cpus * sizeof(struct cpu_stats);
+	char zbuff[len], file[256];
 	struct cpu_stats *buff;
 
-	fmemset(zbuff, 0, sizeof(zbuff));
+	fmemset(zbuff, 0, len);
 	slprintf(file, sizeof(file), ".tmp_mmap.%u", (unsigned int) rand());
 
 	fd = creat(file, S_IRUSR | S_IWUSR);
@@ -383,18 +389,17 @@ static struct cpu_stats *setup_shared_var(unsigned long cpus)
 
 	fd = open_or_die_m(file, O_RDWR | O_CREAT | O_TRUNC,
 			   S_IRUSR | S_IWUSR);
-	write_or_die(fd, zbuff, sizeof(zbuff));
+	write_or_die(fd, zbuff, len);
 
-	buff = (void *) mmap(0, sizeof(zbuff), PROT_READ | PROT_WRITE,
-			     MAP_SHARED, fd, 0);
-	if (buff == (void *) -1)
+	buff = mmap(NULL, len, PROT_READ | PROT_WRITE,
+		    MAP_SHARED, fd, 0);
+	if (buff == MAP_FAILED)
 		panic("Cannot setup shared variable!\n");
 
 	close(fd);
 	unlink(file);
 
-	memset(buff, 0, sizeof(zbuff));
-
+	memset(buff, 0, len);
 	return buff;
 }
 
@@ -405,7 +410,7 @@ static void destroy_shared_var(void *buff, unsigned long cpus)
 
 static void dump_trafgen_snippet(uint8_t *payload, size_t len)
 {
-	int i;
+	size_t i;
 
 	printf("{");
 	for (i = 0; i < len; ++i) {
@@ -449,7 +454,8 @@ static int xmit_smoke_setup(struct ctx *ctx)
 
 static int xmit_smoke_probe(int icmp_sock, struct ctx *ctx)
 {
-	int ret, i, j = 0, probes = 100;
+	int ret;
+	unsigned int i, j = 0, probes = 100;
 	short ident, cnt = 1, idstore[probes];
 	uint8_t outpack[512], *data;
 	struct icmphdr *icmp;
@@ -483,7 +489,7 @@ static int xmit_smoke_probe(int icmp_sock, struct ctx *ctx)
 
 		ret = sendto(icmp_sock, outpack, len, MSG_DONTWAIT,
 			     (struct sockaddr *) &ctx->dest, sizeof(ctx->dest));
-		if (unlikely(ret != len))
+		if (unlikely(ret != (int) len))
 			panic("Cannot send out probe: %s!\n", strerror(errno));
 
 		ret = poll(&fds, 1, 50);
@@ -499,10 +505,10 @@ static int xmit_smoke_probe(int icmp_sock, struct ctx *ctx)
 				continue;
 			if (unlikely(memcmp(&from, &ctx->dest, sizeof(ctx->dest))))
 				continue;
-			if (unlikely(ret < sizeof(*ip) + sizeof(*icmp)))
+			if (unlikely((size_t) ret < sizeof(*ip) + sizeof(*icmp)))
 				continue;
 			ip = (void *) outpack;
-			if (unlikely(ip->ihl * 4 + sizeof(*icmp) > ret))
+			if (unlikely(ip->ihl * 4 + sizeof(*icmp) > (size_t) ret))
 				continue;
 			icmp = (void *) outpack + ip->ihl * 4;
 			for (i = 0; i < array_size(idstore); ++i) {
@@ -709,9 +715,9 @@ static inline sig_atomic_t __get_state(int cpu)
 	return stats[cpu].state;
 }
 
-static unsigned long __wait_and_sum_others(struct ctx *ctx, int cpu)
+static unsigned long __wait_and_sum_others(struct ctx *ctx, unsigned int cpu)
 {
-	int i;
+	unsigned int i;
 	unsigned long total;
 
 	for (i = 0, total = plen; i < ctx->cpus; i++) {
@@ -730,10 +736,11 @@ static unsigned long __wait_and_sum_others(struct ctx *ctx, int cpu)
 	return total;
 }
 
-static void __correct_global_delta(struct ctx *ctx, int cpu, unsigned long orig)
+static void __correct_global_delta(struct ctx *ctx, unsigned int cpu, unsigned long orig)
 {
-	int i, cpu_sel;
+	unsigned int i;
 	unsigned long total;
+	int cpu_sel;
 	long long delta_correction = 0;
 
 	for (i = 0, total = ctx->num; i < ctx->cpus; i++) {
@@ -757,14 +764,14 @@ static void __correct_global_delta(struct ctx *ctx, int cpu, unsigned long orig)
 	for (cpu_sel = -1, i = 0; i < ctx->cpus; i++) {
 		if (stats[i].cd_packets > 0) {
 			if ((long long) stats[i].cd_packets +
-			    delta_correction > 0) {
+			    delta_correction >= 0) {
 				cpu_sel = i;
 				break;
 			}
 		}
 	}
 
-	if (cpu == cpu_sel)
+	if ((int) cpu == cpu_sel)
 		ctx->num += delta_correction;
 }
 
@@ -784,7 +791,7 @@ static void __set_state_cd(int cpu, unsigned long p, sig_atomic_t s)
 
 static int xmit_packet_precheck(struct ctx *ctx, int cpu)
 {
-	int i;
+	unsigned int i;
 	unsigned long plen_total, orig = ctx->num;
 	size_t mtu, total_len = 0;
 
@@ -797,7 +804,7 @@ static int xmit_packet_precheck(struct ctx *ctx, int cpu)
 	plen_total = __wait_and_sum_others(ctx, cpu);
 
 	if (orig > 0) {
-		ctx->num = (unsigned long) nearbyint((1.0 * plen / plen_total) * orig);
+		ctx->num = (unsigned long) round((1.0 * plen / plen_total) * orig);
 
 		__set_state_cd(cpu, ctx->num, CPU_STATS_STATE_CHK |
 			       CPU_STATS_STATE_CFG);
@@ -820,14 +827,14 @@ static int xmit_packet_precheck(struct ctx *ctx, int cpu)
 }
 
 static void main_loop(struct ctx *ctx, char *confname, bool slow,
-		      int cpu, bool invoke_cpp, unsigned long orig_num)
+		      unsigned int cpu, bool invoke_cpp, unsigned long orig_num)
 {
 	compile_packets(confname, ctx->verbose, cpu, invoke_cpp);
 	if (xmit_packet_precheck(ctx, cpu) < 0)
 		return;
 
 	if (cpu == 0) {
-		int i;
+		unsigned int i;
 		size_t total_len = 0, total_pkts = 0;
 
 		for (i = 0; i < ctx->cpus; ++i) {
@@ -856,22 +863,23 @@ static void main_loop(struct ctx *ctx, char *confname, bool slow,
 static unsigned int generate_srand_seed(void)
 {
 	int fd;
-	unsigned int seed;
+	unsigned int _seed;
 
 	fd = open("/dev/urandom", O_RDONLY);
 	if (fd < 0)
-		return time(0);
+		return time(NULL);
 
-	read_or_die(fd, &seed, sizeof(seed));
+	read_or_die(fd, &_seed, sizeof(_seed));
 
 	close(fd);
-	return seed;
+	return _seed;
 }
 
 int main(int argc, char **argv)
 {
-	bool slow = false, invoke_cpp = false, reseed = true;
-	int c, opt_index, i, j, vals[4] = {0}, irq;
+	bool slow = false, invoke_cpp = false, reseed = true, cpustats = true;
+	int c, opt_index, vals[4] = {0}, irq;
+	unsigned int i, j;
 	char *confname = NULL, *ptr;
 	unsigned long cpus_tmp, orig_num = 0;
 	unsigned long long tx_packets, tx_bytes;
@@ -890,6 +898,9 @@ int main(int argc, char **argv)
 			break;
 		case 'v':
 			version();
+			break;
+		case 'C':
+			cpustats = false;
 			break;
 		case 'e':
 			example();
@@ -1064,7 +1075,7 @@ int main(int argc, char **argv)
 	}
 
 	if (ctx.rfraw)
-		leave_rfmon_mac80211(ctx.device_trans, ctx.device);
+		leave_rfmon_mac80211(ctx.device);
 
 	reset_system_socket_memory(vals, array_size(vals));
 
@@ -1080,7 +1091,7 @@ int main(int argc, char **argv)
 	printf("\n");
 	printf("\r%12llu packets outgoing\n", tx_packets);
 	printf("\r%12llu bytes outgoing\n", tx_bytes);
-	for (i = 0; i < ctx.cpus; i++) {
+	for (i = 0; cpustats && i < ctx.cpus; i++) {
 		printf("\r%12lu sec, %lu usec on CPU%d (%llu packets)\n",
 		       stats[i].tv_sec, stats[i].tv_usec, i,
 		       stats[i].tx_packets);

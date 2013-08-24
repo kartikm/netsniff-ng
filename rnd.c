@@ -10,7 +10,7 @@
 
 static int fdw = -1;
 
-static void randombytes_weak(unsigned char *x, unsigned long long xlen)
+static void randombytes_weak(unsigned char *x, size_t xlen)
 {
 	int ret;
 
@@ -40,14 +40,14 @@ static void randombytes_weak(unsigned char *x, unsigned long long xlen)
 	}
 }
 
-static void randombytes_strong(unsigned char *x, unsigned long long xlen)
+static void randombytes_strong(unsigned char *x, size_t xlen)
 {
 	int fds, ret;
 
 	fds = open_or_die(HIG_ENTROPY_SOURCE, O_RDONLY);
 
 	ret = read_exact(fds, x, xlen, 0);
-	if (ret != xlen)
+	if (ret != (int) xlen)
 		panic("Error reading from entropy source!\n");
 
 	close(fds);

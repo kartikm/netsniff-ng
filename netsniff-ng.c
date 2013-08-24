@@ -26,7 +26,7 @@
 #include "ring_rx.h"
 #include "ring_tx.h"
 #include "mac80211.h"
-#include "promisc.h"
+#include "dev.h"
 #include "built_in.h"
 #include "pcap_io.h"
 #include "privs.h"
@@ -37,6 +37,7 @@
 #include "irq.h"
 #include "str.h"
 #include "sig.h"
+#include "config.h"
 #include "sock.h"
 #include "geoip.h"
 #include "lockme.h"
@@ -63,7 +64,7 @@ struct ctx {
 static volatile sig_atomic_t sigint = 0;
 static volatile bool next_dump = false;
 
-static const char *short_options = "d:i:o:rf:MJt:S:k:n:b:HQmcsqXlvhF:RGAP:Vu:g:T:DB";
+static const char *short_options = "d:i:o:rf:MJt:S:k:n:b:HQmcsqXlvhF:RGAP:Vu:g:T:DBU";
 static const struct option long_options[] = {
 	{"dev",			required_argument,	NULL, 'd'},
 	{"in",			required_argument,	NULL, 'i'},
@@ -184,7 +185,7 @@ static void pcap_to_xmit(struct ctx *ctx)
 	tx_sock = pf_socket();
 
 	if (!strncmp("-", ctx->device_in, strlen("-"))) {
-		fd = dup(fileno(stdin));
+		fd = dup_or_die(fileno(stdin));
 		close(fileno(stdin));
 		if (ctx->pcap == PCAP_OPS_MM)
 			ctx->pcap = PCAP_OPS_SG;
@@ -278,7 +279,7 @@ static void pcap_to_xmit(struct ctx *ctx)
 				 !bpf_run_filter(&bpf_ops, out,
 						 pcap_get_length(&phdr, ctx->magic)));
 
-			pcap_pkthdr_to_tpacket_hdr(&phdr, ctx->magic, &hdr->tp_h, &hdr->s_ll);
+			pcap_pkthdr_to_tpacket_hdr(&phdr, ctx->magic, &hdr->tp_h);
 
 			ctx->tx_bytes += hdr->tp_h.tp_len;;
 			ctx->tx_packets++;
@@ -319,7 +320,7 @@ static void pcap_to_xmit(struct ctx *ctx)
 	destroy_tx_ring(tx_sock, &tx_ring);
 
 	if (ctx->rfraw)
-		leave_rfmon_mac80211(ctx->device_trans, ctx->device_out);
+		leave_rfmon_mac80211(ctx->device_out);
 
 	if (__pcap_io->prepare_close_pcap)
 		__pcap_io->prepare_close_pcap(fd, PCAP_MODE_RD);
@@ -342,7 +343,7 @@ static void receive_to_xmit(struct ctx *ctx)
 {
 	short ifflags = 0;
 	uint8_t *in, *out;
-	int rx_sock, ifindex_in, ifindex_out;
+	int rx_sock, ifindex_in, ifindex_out, ret;
 	unsigned int size_in, size_out, it_in = 0, it_out = 0;
 	unsigned long frame_count = 0;
 	struct frame_map *hdr_in, *hdr_out;
@@ -393,7 +394,7 @@ static void receive_to_xmit(struct ctx *ctx)
 	dissector_init_all(ctx->print_mode);
 
 	 if (ctx->promiscuous)
-		ifflags = enter_promiscuous_mode(ctx->device_in);
+		ifflags = device_enter_promiscuous_mode(ctx->device_in);
 
 	if (ctx->kpull)
 		interval = ctx->kpull;
@@ -472,14 +473,18 @@ static void receive_to_xmit(struct ctx *ctx)
 				goto out;
 		}
 
-		poll(&rx_poll, 1, -1);
+		ret = poll(&rx_poll, 1, -1);
+		if (unlikely(ret < 0)) {
+			if (errno != EINTR)
+				panic("Poll failed!\n");
+		}
 	}
 
 	out:
 
 	timer_purge();
 
-	sock_rx_net_stats(rx_sock);
+	sock_rx_net_stats(rx_sock, 0);
 
 	bpf_release(&bpf_ops);
 
@@ -489,7 +494,7 @@ static void receive_to_xmit(struct ctx *ctx)
 	destroy_rx_ring(rx_sock, &rx_ring);
 
 	if (ctx->promiscuous)
-		leave_promiscuous_mode(ctx->device_in, ifflags);
+		device_leave_promiscuous_mode(ctx->device_in, ifflags);
 
 	close(tx_sock);
 	close(rx_sock);
@@ -539,12 +544,11 @@ static void read_pcap(struct ctx *ctx)
 	struct sock_fprog bpf_ops;
 	struct frame_map fm;
 	struct timeval start, end, diff;
-	struct sockaddr_ll sll;
 
 	bug_on(!__pcap_io);
 
 	if (!strncmp("-", ctx->device_in, strlen("-"))) {
-		fd = dup(fileno(stdin));
+		fd = dup_or_die(fileno(stdin));
 		close(fileno(stdin));
 		if (ctx->pcap == PCAP_OPS_MM)
 			ctx->pcap = PCAP_OPS_SG;
@@ -579,7 +583,7 @@ static void read_pcap(struct ctx *ctx)
 
 	if (ctx->device_out) {
 		if (!strncmp("-", ctx->device_out, strlen("-"))) {
-			fdo = dup(fileno(stdout));
+			fdo = dup_or_die(fileno(stdout));
 			close(fileno(stdout));
 		} else {
 			fdo = open_or_die_m(ctx->device_out, O_RDWR | O_CREAT |
@@ -614,7 +618,7 @@ static void read_pcap(struct ctx *ctx)
 			 !bpf_run_filter(&bpf_ops, out,
 					 pcap_get_length(&phdr, ctx->magic)));
 
-		pcap_pkthdr_to_tpacket_hdr(&phdr, ctx->magic, &fm.tp_h, &sll);
+		pcap_pkthdr_to_tpacket_hdr(&phdr, ctx->magic, &fm.tp_h);
 
 		ctx->tx_bytes += fm.tp_h.tp_len;
 		ctx->tx_packets++;
@@ -693,7 +697,7 @@ static int next_multi_pcap_file(struct ctx *ctx, int fd)
 	close(fd);
 
 	slprintf(fname, sizeof(fname), "%s/%s%lu.pcap", ctx->device_out,
-		 ctx->prefix ? : "dump-", time(0));
+		 ctx->prefix ? : "dump-", time(NULL));
 
 	fd = open_or_die_m(fname, O_RDWR | O_CREAT | O_TRUNC |
 			   O_LARGEFILE, DEFFILEMODE);
@@ -722,7 +726,7 @@ static int begin_multi_pcap_file(struct ctx *ctx)
 		ctx->device_out[strlen(ctx->device_out) - 1] = 0;
 
 	slprintf(fname, sizeof(fname), "%s/%s%lu.pcap", ctx->device_out,
-		 ctx->prefix ? : "dump-", time(0));
+		 ctx->prefix ? : "dump-", time(NULL));
 
 	fd = open_or_die_m(fname, O_RDWR | O_CREAT | O_TRUNC |
 			   O_LARGEFILE, DEFFILEMODE);
@@ -769,7 +773,7 @@ static int begin_single_pcap_file(struct ctx *ctx)
 	bug_on(!__pcap_io);
 
 	if (!strncmp("-", ctx->device_out, strlen("-"))) {
-		fd = dup(fileno(stdout));
+		fd = dup_or_die(fileno(stdout));
 		close(fileno(stdout));
 		if (ctx->pcap == PCAP_OPS_MM)
 			ctx->pcap = PCAP_OPS_SG;
@@ -812,7 +816,7 @@ static void print_pcap_file_stats(int sock, struct ctx *ctx)
 }
 
 static void walk_t3_block(struct block_desc *pbd, struct ctx *ctx,
-			  int sock, int fd, unsigned long *frame_count)
+			  int sock, int *fd, unsigned long *frame_count)
 {
 	uint8_t *packet;
 	int num_pkts = pbd->h1.num_pkts, i, ret;
@@ -836,9 +840,9 @@ static void walk_t3_block(struct block_desc *pbd, struct ctx *ctx,
 		if (dump_to_pcap(ctx)) {
 			tpacket3_hdr_to_pcap_pkthdr(hdr, sll, &phdr, ctx->magic);
 
-			ret = __pcap_io->write_pcap(fd, &phdr, ctx->magic, packet,
+			ret = __pcap_io->write_pcap(*fd, &phdr, ctx->magic, packet,
 						    pcap_get_length(&phdr, ctx->magic));
-			if (unlikely(ret != pcap_get_total_length(&phdr, ctx->magic)))
+			if (unlikely(ret != (int) pcap_get_total_length(&phdr, ctx->magic)))
 				panic("Write error to pcap!\n");
 		}
 
@@ -868,7 +872,7 @@ static void walk_t3_block(struct block_desc *pbd, struct ctx *ctx,
 			}
 
 			if (next_dump) {
-				fd = next_multi_pcap_file(ctx, fd);
+				*fd = next_multi_pcap_file(ctx, *fd);
 				next_dump = false;
 
 				if (unlikely(ctx->verbose))
@@ -915,7 +919,9 @@ static void recv_only_or_dump(struct ctx *ctx)
 		bpf_dump_all(&bpf_ops);
 	bpf_attach_to_sock(sock, &bpf_ops);
 
-	set_sockopt_hwtimestamp(sock, ctx->device_in);
+	ret = set_sockopt_hwtimestamp(sock, ctx->device_in);
+	if (ret == 0 && ctx->verbose)
+		printf("HW timestamping enabled\n");
 
 	setup_rx_ring_layout(sock, &rx_ring, size, true, true);
 	create_rx_ring(sock, &rx_ring, ctx->verbose);
@@ -936,7 +942,7 @@ static void recv_only_or_dump(struct ctx *ctx)
 	}
 
 	if (ctx->promiscuous)
-		ifflags = enter_promiscuous_mode(ctx->device_in);
+		ifflags = device_enter_promiscuous_mode(ctx->device_in);
 
 	if (dump_to_pcap(ctx) && __pcap_io->init_once_pcap)
 		__pcap_io->init_once_pcap();
@@ -971,7 +977,7 @@ static void recv_only_or_dump(struct ctx *ctx)
 	while (likely(sigint == 0)) {
 		while (user_may_pull_from_rx_block((pbd = (void *)
 				rx_ring.frames[it].iov_base))) {
-			walk_t3_block(pbd, ctx, sock, fd, &frame_count);
+			walk_t3_block(pbd, ctx, sock, &fd, &frame_count);
 
 			kernel_may_pull_from_rx_block(pbd);
 			it = (it + 1) % rx_ring.layout3.tp_block_nr;
@@ -980,14 +986,18 @@ static void recv_only_or_dump(struct ctx *ctx)
 				break;
 		}
 
-		poll(&rx_poll, 1, -1);
+		ret = poll(&rx_poll, 1, -1);
+		if (unlikely(ret < 0)) {
+			if (errno != EINTR)
+				panic("Poll failed!\n");
+		}
 	}
 
 	bug_on(gettimeofday(&end, NULL));
 	timersub(&end, &start, &diff);
 
 	if (!(ctx->dump_dir && ctx->print_mode == PRINT_NONE)) {
-		sock_rx_net_stats(sock);
+		sock_rx_net_stats(sock, frame_count);
 
 		printf("\r%12lu  sec, %lu usec in total\n",
 		       diff.tv_sec, diff.tv_usec);
@@ -1001,10 +1011,10 @@ static void recv_only_or_dump(struct ctx *ctx)
 	destroy_rx_ring(sock, &rx_ring);
 
 	if (ctx->promiscuous)
-		leave_promiscuous_mode(ctx->device_in, ifflags);
+		device_leave_promiscuous_mode(ctx->device_in, ifflags);
 
 	if (ctx->rfraw)
-		leave_rfmon_mac80211(ctx->device_trans, ctx->device_in);
+		leave_rfmon_mac80211(ctx->device_in);
 
 	if (dump_to_pcap(ctx)) {
 		if (ctx->dump_dir)
@@ -1014,6 +1024,35 @@ static void recv_only_or_dump(struct ctx *ctx)
 	}
 
 	close(sock);
+}
+
+static void init_ctx(struct ctx *ctx)
+{
+	memset(ctx, 0, sizeof(*ctx));
+	ctx->uid = getuid();
+	ctx->uid = getgid();
+
+	ctx->cpu = -1;
+	ctx->packet_type = -1;
+
+	ctx->magic = ORIGINAL_TCPDUMP_MAGIC;
+	ctx->print_mode = PRINT_NORM;
+	ctx->pcap = PCAP_OPS_SG;
+
+	ctx->dump_mode = DUMP_INTERVAL_TIME;
+	ctx->dump_interval = 60;
+
+	ctx->promiscuous = true;
+	ctx->randomize = false;
+}
+
+static void destroy_ctx(struct ctx *ctx)
+{
+	free(ctx->device_in);
+	free(ctx->device_out);
+	free(ctx->device_trans);
+
+	free(ctx->prefix);
 }
 
 static void __noreturn help(void)
@@ -1080,8 +1119,9 @@ static void __noreturn help(void)
 
 static void __noreturn version(void)
 {
-	printf("\nnetsniff-ng %s, the packet sniffing beast\n", VERSION_LONG);
-	puts("http://www.netsniff-ng.org\n\n"
+	printf("\nnetsniff-ng %s, Git id: %s\n", VERSION_LONG, GITVERSION);
+	puts("the packet sniffing beast\n"
+	     "http://www.netsniff-ng.org\n\n"
 	     "Please report bugs to <bugs@netsniff-ng.org>\n"
 	     "Copyright (C) 2009-2013 Daniel Borkmann <dborkma@tik.ee.ethz.ch>\n"
 	     "Copyright (C) 2009-2012 Emmanuel Roullit <emmanuel.roullit@gmail.com>\n"
@@ -1099,21 +1139,9 @@ int main(int argc, char **argv)
 	int c, i, j, cpu_tmp, opt_index, ops_touched = 0, vals[4] = {0};
 	bool prio_high = false, setsockmem = true;
 	void (*main_loop)(struct ctx *ctx) = NULL;
-	struct ctx ctx = {
-		.link_type = LINKTYPE_EN10MB,
-		.print_mode = PRINT_NORM,
-		.cpu = -1,
-		.packet_type = -1,
-		.promiscuous = true,
-		.randomize = false,
-		.pcap = PCAP_OPS_SG,
-		.dump_interval = 60,
-		.dump_mode = DUMP_INTERVAL_TIME,
-		.uid = getuid(),
-		.gid = getgid(),
-		.magic = ORIGINAL_TCPDUMP_MAGIC,
-	};
+	struct ctx ctx;
 
+	init_ctx(&ctx);
 	srand(time(NULL));
 
 	while ((c = getopt_long(argc, argv, short_options, long_options,
@@ -1362,6 +1390,8 @@ int main(int argc, char **argv)
 
 	if (ctx.device_in && (device_mtu(ctx.device_in) ||
 	    !strncmp("any", ctx.device_in, strlen(ctx.device_in)))) {
+		if (!ctx.rfraw)
+			ctx.link_type = pcap_devtype_to_linktype(ctx.device_in);
 		if (!ctx.device_out) {
 			ctx.dump = 0;
 			main_loop = recv_only_or_dump;
@@ -1403,13 +1433,10 @@ int main(int argc, char **argv)
 	if (setsockmem)
 		reset_system_socket_memory(vals, array_size(vals));
 	destroy_geoip();
+
 	device_restore_irq_affinity_list();
 	tprintf_cleanup();
 
-	free(ctx.device_in);
-	free(ctx.device_out);
-	free(ctx.device_trans);
-	free(ctx.prefix);
-
+	destroy_ctx(&ctx);
 	return 0;
 }

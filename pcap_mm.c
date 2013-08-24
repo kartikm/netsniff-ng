@@ -64,19 +64,19 @@ static ssize_t pcap_mm_write(int fd, pcap_pkthdr_t *phdr, enum pcap_type type,
 	return hdrsize + len;
 }
 
-static ssize_t pcap_mm_read(int fd, pcap_pkthdr_t *phdr, enum pcap_type type,
-			    uint8_t *packet, size_t len)
+static ssize_t pcap_mm_read(int fd __maybe_unused, pcap_pkthdr_t *phdr,
+			    enum pcap_type type, uint8_t *packet, size_t len)
 {
 	size_t hdrsize = pcap_get_hdr_length(phdr, type), hdrlen;
 
-	if (unlikely((off_t) (ptr_va_curr + hdrsize - ptr_va_start) > map_size))
+	if (unlikely((off_t) (ptr_va_curr + hdrsize - ptr_va_start) > (off_t) map_size))
 		return -EIO;
 
 	fmemcpy(&phdr->raw, ptr_va_curr, hdrsize);
 	ptr_va_curr += hdrsize;
 	hdrlen = pcap_get_length(phdr, type);
 
-	if (unlikely((off_t) (ptr_va_curr + hdrlen - ptr_va_start) > map_size))
+	if (unlikely((off_t) (ptr_va_curr + hdrlen - ptr_va_start) > (off_t) map_size))
 		return -EIO;
 	if (unlikely(hdrlen == 0 || hdrlen > len))
 		return -EINVAL;
@@ -116,7 +116,7 @@ static void __pcap_mm_prepare_access_wr(int fd, bool jumbo)
 	if (ret != 1)
 		panic("Cannot write file!\n");
 
-	ptr_va_start = mmap(0, map_size, PROT_WRITE, MAP_SHARED, fd, 0);
+	ptr_va_start = mmap(NULL, map_size, PROT_WRITE, MAP_SHARED, fd, 0);
 	if (ptr_va_start == MAP_FAILED)
 		panic("mmap of file failed!");
 	ret = madvise(ptr_va_start, map_size, MADV_SEQUENTIAL);
@@ -138,7 +138,7 @@ static void __pcap_mm_prepare_access_rd(int fd)
 		panic("pcap dump file is not a regular file!\n");
 
 	map_size = sb.st_size;
-	ptr_va_start = mmap(0, map_size, PROT_READ, MAP_SHARED | MAP_LOCKED, fd, 0);
+	ptr_va_start = mmap(NULL, map_size, PROT_READ, MAP_SHARED | MAP_LOCKED, fd, 0);
 	if (ptr_va_start == MAP_FAILED)
 		panic("mmap of file failed!");
 	ret = madvise(ptr_va_start, map_size, MADV_SEQUENTIAL);
@@ -169,7 +169,7 @@ static int pcap_mm_prepare_access(int fd, enum pcap_mode mode, bool jumbo)
 	return 0;
 }
 
-static void pcap_mm_fsync(int fd)
+static void pcap_mm_fsync(int fd __maybe_unused)
 {
 	msync(ptr_va_start, (off_t) (ptr_va_curr - ptr_va_start), MS_ASYNC);
 }

@@ -8,7 +8,7 @@ netsniff-ng \- the packet sniffing beast
 .PP
 .SH SYNOPSIS
 .PP
-\fB netsniff-ng\fR { [\fIoptions\fR] [\fIfilter-expression\fR] }
+\fBnetsniff-ng\fR { [\fIoptions\fR] [\fIfilter-expression\fR] }
 .PP
 .SH DESCRIPTION
 .PP
@@ -61,6 +61,8 @@ assuming you do not rotate such pcaps in ram (and from there periodically
 scheduled move to slower medias). You can then use mergecap(1) to transform
 all pcaps into a single large pcap. Thus, netsniff-ng then works multithreaded
 eventually.
+.PP
+netsniff-ng can also be used to debug netlink traffic.
 .PP
 .SH OPTIONS
 .PP
@@ -298,6 +300,20 @@ are not available.
 .SS cat foo.pcap | netsniff-ng -i - -o -
 Read a pcap file from stdin and convert it into a trafgen(8) configuration
 file to stdout.
+.PP
+.SS modprobe nlmon
+.SS ip link add type nlmon
+.SS ip link set nlmon0 up
+.SS netsniff-ng -i nlmon0 -o dump.pcap -s
+.SS ip link set nlmon0 down
+.SS ip link del dev nlmon0
+.SS rmmod nlmon
+In this example, netlink traffic is being captured. If not already done, a
+netlink monitoring device needs to be set up before it can be used to capture
+netlink socket buffers (iproute2's ip(1) commands are given for nlmon device
+setup and teardown). netsniff-ng can then make use of the nlmon device as
+an input device. In this example a pcap file with netlink traffic is being
+recorded.
 .PP
 .SH CONFIG FILES
 .PP
@@ -545,3 +561,7 @@ Christoph Jaeger. It is currently maintained by Tobias Klauser
 .PP
 .SH AUTHOR
 Manpage was written by Daniel Borkmann.
+.PP
+.SH COLOPHON
+This page is part of the Linux netsniff-ng toolkit project. A description of the project,
+and information about reporting bugs, can be found at http://netsniff-ng.org/.

@@ -15,10 +15,6 @@
 #include <signal.h>
 #include <netdb.h>
 #include <ctype.h>
-#include <libnetfilter_conntrack/libnetfilter_conntrack.h>
-#include <libnetfilter_conntrack/libnetfilter_conntrack_tcp.h>
-#include <libnetfilter_conntrack/libnetfilter_conntrack_dccp.h>
-#include <libnetfilter_conntrack/libnetfilter_conntrack_sctp.h>
 #include <netinet/in.h>
 #include <curses.h>
 #include <dirent.h>
@@ -29,7 +25,9 @@
 
 #include "die.h"
 #include "xmalloc.h"
+#include "conntrack.h"
 #include "ioops.h"
+#include "config.h"
 #include "str.h"
 #include "sig.h"
 #include "geoip.h"
@@ -37,6 +35,7 @@
 #include "locking.h"
 #include "dissector_eth.h"
 #include "pkt_buff.h"
+#include "screen.h"
 
 struct flow_entry {
 	uint32_t flow_id, use, status;
@@ -225,7 +224,7 @@ static void flow_entry_get_extended(struct flow_entry *n);
 
 static void help(void)
 {
-	printf("\nflowtop %s, top-like netfilter TCP/UDP flow tracking\n",
+	printf("\nflowtop %s, top-like netfilter TCP/UDP/SCTP/.. flow tracking\n",
 	       VERSION_STRING);
 	puts("http://www.netsniff-ng.org\n\n"
 	     "Usage: flowtop [options]\n"
@@ -260,9 +259,9 @@ static void help(void)
 
 static void version(void)
 {
-	printf("\nflowtop %s, top-like netfilter TCP/UDP flow tracking\n",
-	       VERSION_LONG);
-	puts("http://www.netsniff-ng.org\n\n"
+	printf("\nflowtop %s, Git id: %s\n", VERSION_LONG, GITVERSION);
+	puts("top-like netfilter TCP/UDP/SCTP/.. flow tracking\n"
+	     "http://www.netsniff-ng.org\n\n"
 	     "Please report bugs to <bugs@netsniff-ng.org>\n"
 	     "Copyright (C) 2011-2013 Daniel Borkmann <dborkma@tik.ee.ethz.ch>\n"
 	     "Copyright (C) 2011-2012 Emmanuel Roullit <emmanuel.roullit@gmail.com>\n"
@@ -415,7 +414,7 @@ static int walk_process(char *process, struct flow_entry *n)
 		if (stat(path, &statbuf) < 0)
 			continue;
 
-		if (S_ISSOCK(statbuf.st_mode) && n->inode == statbuf.st_ino) {
+		if (S_ISSOCK(statbuf.st_mode) && (ino_t) n->inode == statbuf.st_ino) {
 			memset(n->cmdline, 0, sizeof(n->cmdline));
 
             		snprintf(path, sizeof(path), "/proc/%s/exe", process);
@@ -740,17 +739,6 @@ static uint16_t presenter_get_port(uint16_t src, uint16_t dst, int tcp)
 	}
 }
 
-static void presenter_screen_init(WINDOW **screen)
-{
-	(*screen) = initscr();
-	noecho();
-	cbreak();
-	keypad(stdscr, TRUE);
-	nodelay(*screen, TRUE);
-	refresh();
-	wrefresh(*screen);
-}
-
 static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 				     unsigned int *line)
 {
@@ -895,7 +883,8 @@ static inline int presenter_flow_wrong_state(struct flow_entry *n, int state)
 static void presenter_screen_update(WINDOW *screen, struct flow_list *fl,
 				    int skip_lines)
 {
-	int i, j, maxy;
+	int maxy;
+	size_t i, j;
 	unsigned int line = 3;
 	struct flow_entry *n;
 	uint8_t protocols[] = {
@@ -984,18 +973,13 @@ static void presenter_screen_update(WINDOW *screen, struct flow_list *fl,
 	refresh();
 }
 
-static inline void presenter_screen_end(void)
-{
-	endwin();
-}
-
 static void presenter(void)
 {
 	int skip_lines = 0;
-	WINDOW *screen = NULL;
+	WINDOW *screen;
 
 	dissector_init_ethernet(0);
-	presenter_screen_init(&screen);
+	screen = screen_init(false);
 
 	rcu_register_thread();
 	while (!sigint) {
@@ -1027,12 +1011,12 @@ static void presenter(void)
 	}
 	rcu_unregister_thread();
 
-	presenter_screen_end();
+	screen_end();
 	dissector_cleanup_ethernet();
 }
 
 static int collector_cb(enum nf_conntrack_msg_type type,
-			struct nf_conntrack *ct, void *data)
+			struct nf_conntrack *ct, void *data __maybe_unused)
 {
 	if (sigint)
 		return NFCT_CB_STOP;
@@ -1064,7 +1048,7 @@ static inline void collector_flush(struct nfct_handle *handle, uint8_t family)
 	nfct_query(handle, NFCT_Q_FLUSH, &family);
 }
 
-static void *collector(void *null)
+static void *collector(void *null __maybe_unused)
 {
 	int ret;
 	struct nfct_handle *handle;
@@ -1128,7 +1112,7 @@ static void *collector(void *null)
 	flow_list_destroy(&flow_list);
 	nfct_close(handle);
 
-	pthread_exit(0);
+	pthread_exit(NULL);
 }
 
 int main(int argc, char **argv)

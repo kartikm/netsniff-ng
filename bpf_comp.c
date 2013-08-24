@@ -8,6 +8,7 @@
 #include <linux/filter.h>
 
 #include "xmalloc.h"
+#include "config.h"
 #include "bpf.h"
 #include "die.h"
 

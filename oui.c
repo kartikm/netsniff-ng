@@ -36,7 +36,7 @@ const char *lookup_vendor(unsigned int id)
 void dissector_init_oui(void)
 {
 	FILE *fp;
-	char buff[128], *ptr;
+	char buff[128], *ptr, *end;
 	struct vendor_id *v;
 	void **pos;
 
@@ -54,10 +54,21 @@ void dissector_init_oui(void)
 		ptr = buff;
 
 		v = xmalloc(sizeof(*v));
-		v->id = strtol(ptr, &ptr, 0);
+		v->id = strtol(ptr, &end, 0);
+		/* not a valid line, skip */
+		if (v->id == 0 && end == ptr) {
+			xfree(v);
+			continue;
+		}
 
-		if ((ptr = strstr(buff, ", ")))
-                        ptr += strlen(", ");
+		ptr = strstr(buff, ", ");
+		/* likewise */
+		if (!ptr) {
+			xfree(v);
+			continue;
+		}
+
+		ptr += strlen(", ");
 		ptr = strtrim_right(ptr, '\n');
 		ptr = strtrim_right(ptr, ' ');
 

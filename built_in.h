@@ -109,6 +109,15 @@ typedef uint8_t		u8;
 	})
 #endif /* max */
 
+#ifndef max_t
+# define max_t(type, a, b)						\
+	({								\
+		type ___max1 = (a);					\
+		type ___max2 = (b);					\
+		___max1 > ___max2 ? ___max1 : ___max2;			\
+	})
+#endif /* max_t */
+
 #ifndef min
 # define min(a, b)							\
 	({								\
@@ -117,6 +126,15 @@ typedef uint8_t		u8;
 		_a < _b ? _a : _b;					\
 	})
 #endif /* min */
+
+#ifndef min_t
+# define min_t(type, a, b)						\
+	({								\
+		type ___min1 = (a);					\
+		type ___min2 = (b);					\
+		___min1 < ___min2 ? ___min1 : ___min2;			\
+	})
+#endif /* min_t */
 
 #ifndef ispow2
 # define ispow2(x)		({ !!((x) && !((x) & ((x) - 1))); })
@@ -362,6 +380,18 @@ static inline u64 cpu_to_le64(u64 val)
 
 #ifndef POLLRDHUP
 # define POLLRDHUP			0x2000
+#endif
+
+#ifndef ARPHRD_IEEE802154_MONITOR
+# define ARPHRD_IEEE802154_MONITOR	805
+#endif
+
+#ifndef ARPHRD_IP6GRE
+# define ARPHRD_IP6GRE			823
+#endif
+
+#ifndef ARPHRD_NETLINK
+# define ARPHRD_NETLINK			824
 #endif
 
 #endif /* BUILT_IN_H */

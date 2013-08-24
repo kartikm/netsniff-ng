@@ -8,14 +8,14 @@ ifpps \- top-like networking and system statistics
 .PP
 .SH SYNOPSIS
 .PP
-\fB ifpps\fR { [\fIoptions\fR] | [\fIdevice\fR] }
+\fBifpps\fR { [\fIoptions\fR] | [\fIdevice\fR] }
 .PP
 .SH DESCRIPTION
 .PP
 ifpps is a small utility which periodically provides top-like networking
 and system statistics from the kernel. ifpps gathers its data directly
-from procfs files and does not apply any user space monitoring libraries
-which would falsify statistics under high load.
+from procfs files and does not make use of any user space monitoring
+libraries which would falsify statistics under high load.
 .PP
 For instance, consider the following scenario: two directly connected
 Linux machines with Intel Core 2 Quad Q6600 2.40GHz CPUs, 4 GB RAM, and
@@ -28,34 +28,36 @@ iptraf(8) and ii) ifpps.
 iptraf which incorporates pcap(3) shows an average packet rate of
 246,000 pps while on the other hand ifpps shows an average packet rate
 of 1,378,000 pps. Hence, due to packet copies and deferring statistics
-creation into user space, a measurement error of approximately 460 per cent
+creation into user space, a measurement error of approximately 460 percent
 occurs. Tools like iptraf might display much more information such as
-TCP per flow statistics (hence the use of the pcap library), that is not
-possible with ifpps, because overall networking statistics are our focus;
+TCP per flow statistics (hence the use of the pcap library). This is not
+possible with ifpps, because overall networking statistics are its focus;
 statistics, which are also fairly reliable under high packet load.
 .PP
 ifpps also periodically displays CPU load, interrupt, software interrupt
 data per sample interval as well as total interrupts, all per CPU. In case
-the number of CPUs exceeds 10 or the number specified by the user with the
+the number of CPUs exceeds 5 or the number specified by the user with the
 \[lq]\-n\[rq] command line option, ifpps will only display this number top
 heavy hitters. The topmost heavy hitter CPU will be marked with \[lq]+\[rq].
 The least heavy hitter will always be displayed and is marked with
-\[lq]-\[rq].
+\[lq]-\[rq]. In addition, the average for all the above per-CPU data is
+shown. Optionally the median values can be displayed using the \[lq]\-m\[rq]
+command line option.
+.PP
+ifpps also supports directly the gnuplot(1) data sample format. This
+facilitates creation of gnuplot figures from ifpps time series.
 .PP
 .SH OPTIONS
 .PP
 .SS -d <netdev>, --dev <netdev>
-Networking device to fetch statistics from, for example, eth0, wlan0.
-.PP
-.SS -t <time>, --interval <time>
-Statistics refresh interval in milliseconds, default is 1000ms.
+Networking device to fetch statistics from, for example eth0, wlan0.
 .PP
 .SS -n, --num-cpus
 Set maximum number of top hitter CPUs (in terms of time spent in system/user
 mode) to display in ncurses mode, default is 10.
 .PP
-.SS -p, --promisc
-Turn on promiscuous mode for the given networking device.
+.SS -t <time>, --interval <time>
+Statistics refresh interval in milliseconds, default is 1000ms.
 .PP
 .SS -c, --csv
 Output (once) the ncurses data to the terminal as gnuplot(1)-ready data.
@@ -65,6 +67,17 @@ Continuously output the terminal data after a refresh interval. This option
 is only available, if option \[lq]\-c\[rq] is given. For \[lq]\-l\[rq] it is
 usually recommended to redirect the output into a file that is to be be
 processed later with gnuplot(1).
+.PP
+.SS -m, --median
+Show median values across all CPUs for CPU load, interrupts (per interval and
+absolute) and software interrupts.
+.PP
+.SS -p, --promisc
+Turn on promiscuous mode for the given networking device.
+.PP
+.SS -W, --no-warn
+Suppress possible warnings in the ncurses output, e.g. about a too low sampling
+interval that could cause performance regression.
 .PP
 .SS -v, --version
 Show version information.
@@ -108,3 +121,7 @@ Borkmann <dborkma@tik.ee.ethz.ch>.
 .PP
 .SH AUTHOR
 Manpage was written by Daniel Borkmann.
+.PP
+.SH COLOPHON
+This page is part of the Linux netsniff-ng toolkit project. A description of the project,
+and information about reporting bugs, can be found at http://netsniff-ng.org/.

@@ -1,9 +1,14 @@
-netsniff-ng-libs =	-lGeoIP \
-			$(shell pkg-config --libs libnl-3.0) \
+netsniff-ng-libs =	$(shell pkg-config --libs libnl-3.0) \
 			$(shell pkg-config --libs libnl-genl-3.0) \
-			-lpcap \
-			-lpthread \
+			-lpthread
+
+ifeq ($(CONFIG_LIBPCAP), 1)
+netsniff-ng-libs +=	-lpcap
+endif
+ifeq ($(CONFIG_GEOIP), 1)
+netsniff-ng-libs +=	-lGeoIP \
 			-lz
+endif
 
 netsniff-ng-objs =	dissector.o \
 			dissector_eth.o \
@@ -32,7 +37,6 @@ netsniff-ng-objs =	dissector.o \
 			proto_vlan_q_in_q.o \
 			proto_mpls_unicast.o \
 			proto_80211_mac_hdr.o \
-			promisc.o \
 			privs.o \
 			proc.o \
 			dev.o \
@@ -46,7 +50,6 @@ netsniff-ng-objs =	dissector.o \
 			xmalloc.o \
 			hash.o \
 			bpf.o \
-			bpf_comp.o \
 			oui.o \
 			pcap_rw.o \
 			pcap_sg.o \
@@ -55,8 +58,26 @@ netsniff-ng-objs =	dissector.o \
 			ring_tx.o \
 			ring.o \
 			tprintf.o \
-			tstamping.o \
 			timer.o \
-			geoip.o \
 			mac80211.o \
 			netsniff-ng.o
+
+ifeq ($(CONFIG_LIBPCAP), 1)
+netsniff-ng-objs +=	bpf_comp.o
+endif
+ifeq ($(CONFIG_GEOIP), 1)
+netsniff-ng-objs +=	geoip.o
+endif
+ifeq ($(CONFIG_HWTSTAMP), 1)
+netsniff-ng-objs +=	tstamping.o
+endif
+
+netsniff-ng-eflags = $(shell pkg-config --cflags libnl-3.0) \
+		     $(shell pkg-config --cflags libnl-genl-3.0) \
+		     -DHAVE_DISSECTOR_PROTOS -DNEED_TCPDUMP_LIKE_FILTER
+
+netsniff-ng-confs =	ether.conf \
+			tcp.conf \
+			udp.conf \
+			oui.conf \
+			geoip.conf

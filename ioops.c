@@ -12,22 +12,37 @@
 #include "dev.h"
 #include "ioops.h"
 #include "str.h"
+#include "built_in.h"
 
 int open_or_die(const char *file, int flags)
 {
 	int ret = open(file, flags);
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		panic("Cannot open file %s! %s.\n", file, strerror(errno));
-
 	return ret;
 }
 
 int open_or_die_m(const char *file, int flags, mode_t mode)
 {
 	int ret = open(file, flags, mode);
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		panic("Cannot open or create file %s! %s.", file, strerror(errno));
 	return ret;
+}
+
+int dup_or_die(int oldfd)
+{
+	int newfd = dup(oldfd);
+	if (unlikely(newfd < 0))
+		panic("Cannot dup old file descriptor!\n");
+	return newfd;
+}
+
+void dup2_or_die(int oldfd, int newfd)
+{
+	int ret = dup2(oldfd, newfd);
+	if (unlikely(ret < 0))
+		panic("Cannot dup2 old/new file descriptor!\n");
 }
 
 void create_or_die(const char *file, mode_t mode)
@@ -39,17 +54,17 @@ void create_or_die(const char *file, mode_t mode)
 void pipe_or_die(int pipefd[2], int flags)
 {
 	int ret = pipe2(pipefd, flags);
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		panic("Cannot create pipe2 event fd! %s.\n", strerror(errno));
 }
 
-int tun_open_or_die(char *name, int type)
+int tun_open_or_die(const char *name, int type)
 {
 	int fd, ret;
 	short flags;
 	struct ifreq ifr;
 
-	if (!name)
+	if (unlikely(!name))
 		panic("No name provided for tundev!\n");
 
 	fd = open_or_die("/dev/net/tun", O_RDWR);
@@ -59,11 +74,11 @@ int tun_open_or_die(char *name, int type)
 	strlcpy(ifr.ifr_name, name, IFNAMSIZ);
 
 	ret = ioctl(fd, TUNSETIFF, &ifr);
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		panic("ioctl screwed up! %s.\n", strerror(errno));
 
 	ret = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		panic("fctnl screwed up! %s.\n", strerror(errno));
 
 	flags = device_get_flags(name);
@@ -76,7 +91,7 @@ int tun_open_or_die(char *name, int type)
 ssize_t read_or_die(int fd, void *buf, size_t len)
 {
 	ssize_t ret = read(fd, buf, len);
-	if (ret < 0) {
+	if (unlikely(ret < 0)) {
 		if (errno == EPIPE)
 			die();
 		panic("Cannot read from descriptor! %s.\n", strerror(errno));
@@ -88,7 +103,7 @@ ssize_t read_or_die(int fd, void *buf, size_t len)
 ssize_t write_or_die(int fd, const void *buf, size_t len)
 {
 	ssize_t ret = write(fd, buf, len);
-	if (ret < 0) {
+	if (unlikely(ret < 0)) {
 		if (errno == EPIPE)
 			die();
 		panic("Cannot write to descriptor! %s.", strerror(errno));

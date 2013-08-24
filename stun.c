@@ -33,7 +33,7 @@
 struct stun_header {
 	uint16_t type;
 	uint16_t len;
-	uint32_t magic_cookie; 
+	uint32_t magic_cookie;
 	uint32_t transid[3];
 };
 
@@ -74,6 +74,7 @@ static int stun_test(const char *server_ip, int server_port,
 
 	set_reuseaddr(sock);
 
+	memset(&saddr, 0, sizeof(saddr));
 	saddr.sin_family = PF_INET;
 	saddr.sin_port = htons(tun_port);
 	saddr.sin_addr.s_addr = INADDR_ANY;
@@ -99,7 +100,7 @@ static int stun_test(const char *server_ip, int server_port,
 		     sizeof(daddr));
 	if (ret != len) {
 		printf("Error sending request (%s)!\n", strerror(errno));
-		return -EIO;
+		goto close_error;
 	}
 
 	timeout.tv_sec = TIMEOUT / 1000;
@@ -111,7 +112,7 @@ static int stun_test(const char *server_ip, int server_port,
 	ret = select(sock + 1, &fdset, NULL, NULL, &timeout);
 	if (ret <= 0) {
 		printf("STUN server timeout!\n");
-		return -EIO;
+		goto close_error;
 	}
 
 	memset(rpkt, 0, sizeof(rpkt));
@@ -165,6 +166,9 @@ next:
 	}
 
 	return 0;
+close_error:
+	close(sock);
+	return -EIO;
 }
 
 int print_stun_probe(char *server, int sport, int tport)

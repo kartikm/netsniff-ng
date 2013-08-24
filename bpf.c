@@ -83,7 +83,7 @@ static const char *op_table[] = {
 
 void bpf_dump_op_table(void)
 {
-	int i;
+	size_t i;
 	for (i = 0; i < array_size(op_table); ++i) {
 		if (op_table[i])
 			printf("%s\n", op_table[i]);
@@ -96,29 +96,31 @@ static const char *bpf_dump_linux_k(uint32_t k)
 	default:
 		return "[%d]";
 	case SKF_AD_OFF + SKF_AD_PROTOCOL:
-		return "#proto";
+		return "proto";
 	case SKF_AD_OFF + SKF_AD_PKTTYPE:
-		return "#type";
+		return "type";
 	case SKF_AD_OFF + SKF_AD_IFINDEX:
-		return "#ifidx";
+		return "ifidx";
 	case SKF_AD_OFF + SKF_AD_NLATTR:
-		return "#nla";
+		return "nla";
 	case SKF_AD_OFF + SKF_AD_NLATTR_NEST:
-		return "#nlan";
+		return "nlan";
 	case SKF_AD_OFF + SKF_AD_MARK:
-		return "#mark";
+		return "mark";
 	case SKF_AD_OFF + SKF_AD_QUEUE:
-		return "#queue";
+		return "queue";
 	case SKF_AD_OFF + SKF_AD_HATYPE:
-		return "#hatype";
+		return "hatype";
 	case SKF_AD_OFF + SKF_AD_RXHASH:
-		return "#rxhash";
+		return "rxhash";
 	case SKF_AD_OFF + SKF_AD_CPU:
-		return "#cpu";
+		return "cpu";
 	case SKF_AD_OFF + SKF_AD_VLAN_TAG:
-		return "#vlant";
+		return "vlant";
 	case SKF_AD_OFF + SKF_AD_VLAN_TAG_PRESENT:
-		return "#vlanp";
+		return "vlanp";
+	case SKF_AD_OFF + SKF_AD_PAY_OFFSET:
+		return "poff";
 	}
 }
 
@@ -347,6 +349,7 @@ static char *__bpf_dump(const struct sock_filter bpf, int n)
 void bpf_dump_all(struct sock_fprog *bpf)
 {
 	int i;
+
 	for (i = 0; i < bpf->len; ++i)
 		printf("%s\n", __bpf_dump(bpf->filter[i], i));
 }
@@ -361,7 +364,7 @@ void bpf_attach_to_sock(int sock, struct sock_fprog *bpf)
 
 	ret = setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER,
 			 bpf, sizeof(*bpf));
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		panic("Cannot attach filter to socket!\n");
 }
 
@@ -371,7 +374,7 @@ void bpf_detach_from_sock(int sock)
 
 	ret = setsockopt(sock, SOL_SOCKET, SO_DETACH_FILTER,
 			 &empty, sizeof(empty));
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		panic("Cannot detach filter from socket!\n");
 }
 
@@ -382,7 +385,7 @@ int enable_kernel_bpf_jit_compiler(void)
 	char *file = "/proc/sys/net/core/bpf_jit_enable";
 
 	fd = open(file, O_WRONLY);
-	if (fd < 0)
+	if (unlikely(fd < 0))
 		return -1;
 
 	ret = write(fd, "1", strlen("1"));
@@ -720,6 +723,7 @@ void bpf_parse_rules(char *rulefile, struct sock_fprog *bpf, uint32_t link_type)
 	if (rulefile == NULL) {
 		bpf->len = 1;
 		bpf->filter = xmalloc(sizeof(sf_single));
+
 		fmemcpy(&bpf->filter[0], &sf_single, sizeof(sf_single));
 		return;
 	}
@@ -733,6 +737,7 @@ void bpf_parse_rules(char *rulefile, struct sock_fprog *bpf, uint32_t link_type)
 	fmemset(buff, 0, sizeof(buff));
 	while (fgets(buff, sizeof(buff), fp) != NULL) {
 		buff[sizeof(buff) - 1] = 0;
+
 		if (buff[0] != '{') {
 			fmemset(buff, 0, sizeof(buff));
 			continue;
@@ -744,7 +749,7 @@ void bpf_parse_rules(char *rulefile, struct sock_fprog *bpf, uint32_t link_type)
 			     (unsigned int *) &sf_single.jt,
 			     (unsigned int *) &sf_single.jf,
 			     (unsigned int *) &sf_single.k);
-		if (ret != 4)
+		if (unlikely(ret != 4))
 			panic("BPF syntax error!\n");
 
 		bpf->len++;
@@ -752,12 +757,12 @@ void bpf_parse_rules(char *rulefile, struct sock_fprog *bpf, uint32_t link_type)
 				       bpf->len * sizeof(sf_single));
 
 		fmemcpy(&bpf->filter[bpf->len - 1], &sf_single,
-		       sizeof(sf_single));
+			sizeof(sf_single));
 		fmemset(buff, 0, sizeof(buff));
 	}
 
 	fclose(fp);
 
-	if (__bpf_validate(bpf) == 0)
+	if (unlikely(__bpf_validate(bpf) == 0))
 		panic("This is not a valid BPF program!\n");
 }

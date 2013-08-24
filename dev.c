@@ -2,6 +2,8 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <linux/if_arp.h>
 #include <ifaddrs.h>
 
 #include "dev.h"
@@ -9,6 +11,7 @@
 #include "sock.h"
 #include "die.h"
 #include "link.h"
+#include "built_in.h"
 
 int device_ifindex(const char *ifname)
 {
@@ -24,14 +27,37 @@ int device_ifindex(const char *ifname)
 	strlcpy(ifr.ifr_name, ifname, IFNAMSIZ);
 
 	ret = ioctl(sock, SIOCGIFINDEX, &ifr);
-	if (!ret)
-		index = ifr.ifr_ifindex;
-	else
-		index = -1;
+	if (unlikely(ret))
+		panic("Cannot get ifindex from device!\n");
 
+	index = ifr.ifr_ifindex;
 	close(sock);
 
 	return index;
+}
+
+int device_type(const char *ifname)
+{
+	int ret, sock, type;
+	struct ifreq ifr;
+
+	if (!strncmp("any", ifname, strlen("any")))
+		return ARPHRD_ETHER;
+
+	sock = af_socket(AF_INET);
+
+	memset(&ifr, 0, sizeof(ifr));
+	strlcpy(ifr.ifr_name, ifname, IFNAMSIZ);
+
+	ret = ioctl(sock, SIOCGIFHWADDR, &ifr);
+	if (unlikely(ret))
+		panic("Cannot get iftype from device!\n");
+
+	/* dev->type */
+	type = ifr.ifr_hwaddr.sa_family;
+	close(sock);
+
+	return type;
 }
 
 static int __device_address6(const char *ifname, struct sockaddr_storage *ss)
@@ -40,7 +66,7 @@ static int __device_address6(const char *ifname, struct sockaddr_storage *ss)
 	struct ifaddrs *ifaddr, *ifa;
 
 	ret = getifaddrs(&ifaddr);
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		panic("Cannot get device addresses for IPv6!\n");
 
 	for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
@@ -64,7 +90,7 @@ int device_address(const char *ifname, int af, struct sockaddr_storage *ss)
 	int ret, sock;
 	struct ifreq ifr;
 
-	if (!ss)
+	if (unlikely(!ss))
 		return -EINVAL;
 	if (!strncmp("any", ifname, strlen("any")))
 		return -EINVAL;
@@ -79,17 +105,17 @@ int device_address(const char *ifname, int af, struct sockaddr_storage *ss)
 	ifr.ifr_addr.sa_family = af;
 
 	ret = ioctl(sock, SIOCGIFADDR, &ifr);
-	if (!ret)
+	if (likely(!ret))
 		memcpy(ss, &ifr.ifr_addr, sizeof(ifr.ifr_addr));
 
 	close(sock);
-
 	return ret;
 }
 
-int device_mtu(const char *ifname)
+size_t device_mtu(const char *ifname)
 {
-	int ret, sock, mtu;
+	size_t mtu = 0;
+	int ret, sock;
 	struct ifreq ifr;
 
 	sock = af_socket(AF_INET);
@@ -98,19 +124,16 @@ int device_mtu(const char *ifname)
 	strlcpy(ifr.ifr_name, ifname, IFNAMSIZ);
 
 	ret = ioctl(sock, SIOCGIFMTU, &ifr);
-	if (!ret)
+	if (likely(!ret))
 		mtu = ifr.ifr_mtu;
-	else
-		mtu = 0;
 
 	close(sock);
-
 	return mtu;
 }
 
 short device_get_flags(const char *ifname)
 {
-	short flags;
+	short flags = 0;
 	int ret, sock;
 	struct ifreq ifr;
 
@@ -120,13 +143,10 @@ short device_get_flags(const char *ifname)
 	strlcpy(ifr.ifr_name, ifname, IFNAMSIZ);
 
 	ret = ioctl(sock, SIOCGIFFLAGS, &ifr);
-	if (!ret)
+	if (likely(!ret))
 		flags = ifr.ifr_flags;
-	else
-		flags = 0;
 
 	close(sock);
-
 	return flags;
 }
 
@@ -139,32 +159,54 @@ void device_set_flags(const char *ifname, const short flags)
 
 	memset(&ifr, 0, sizeof(ifr));
 	strlcpy(ifr.ifr_name, ifname, IFNAMSIZ);
-
 	ifr.ifr_flags = flags;
 
 	ret = ioctl(sock, SIOCSIFFLAGS, &ifr);
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		panic("Cannot set NIC flags!\n");
 
 	close(sock);
 }
 
-int device_up_and_running(char *ifname)
+int device_up_and_running(const char *ifname)
 {
 	if (!ifname)
 		return -EINVAL;
 	if (!strncmp("any", ifname, strlen("any")))
 		return 1;
 
-	return (device_get_flags(ifname) & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING);
+	return (device_get_flags(ifname) &
+		(IFF_UP | IFF_RUNNING)) ==
+		(IFF_UP | IFF_RUNNING);
 }
 
 u32 device_bitrate(const char *ifname)
 {
-	u32 speed_c, speed_w;
+	u32 scopper, swireless;
 
-	speed_c = ethtool_bitrate(ifname);
-	speed_w = wireless_bitrate(ifname);
+	scopper   = ethtool_bitrate(ifname);
+	swireless = wireless_bitrate(ifname);
 
-	return (speed_c == 0 ? speed_w : speed_c);
+	return scopper ? : swireless;
+}
+
+short device_enter_promiscuous_mode(const char *ifname)
+{
+	short ifflags;
+
+	if (!strncmp("any", ifname, strlen("any")))
+		return 0;
+
+	ifflags = device_get_flags(ifname);
+	device_set_flags(ifname, ifflags | IFF_PROMISC);
+
+	return ifflags;
+}
+
+void device_leave_promiscuous_mode(const char *ifname, short oldflags)
+{
+	if (!strncmp("any", ifname, strlen("any")))
+		return;
+
+	device_set_flags(ifname, oldflags);
 }

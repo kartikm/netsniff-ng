@@ -16,6 +16,7 @@
 #include "xmalloc.h"
 #include "die.h"
 #include "bpf.h"
+#include "config.h"
 
 static const char *short_options = "vhi:Vdbf:p";
 static const struct option long_options[] = {
@@ -53,7 +54,9 @@ static void __noreturn help(void)
 	     "  bpfc -f tcpdump -i fubar > foo -->  tcpdump -ddd like ...\n"
 	     "  bpfc -f xt_bpf -b -p -i fubar\n"
 	     "  iptables -A INPUT -m bpf --bytecode \"`./bpfc -f xt_bpf -i fubar`\" -j LOG\n"
-	     "  bpfc -   (read from stdin)\n\n"
+	     "  bpfc -   (read from stdin)\n"
+	     "Note:\n"
+	     "  Generation of seccomp-BPF filters are fully supported as well.\n\n"
 	     "Please report bugs to <bugs@netsniff-ng.org>\n"
 	     "Copyright (C) 2011-2013 Daniel Borkmann <dborkma@tik.ee.ethz.ch>,\n"
 	     "Swiss federal institute of technology (ETH Zurich)\n"
@@ -65,8 +68,9 @@ static void __noreturn help(void)
 
 static void __noreturn version(void)
 {
-	printf("\nbpfc %s, a tiny BPF compiler\n", VERSION_LONG);
-	puts("http://www.netsniff-ng.org\n\n"
+	printf("\nbpfc %s, Git id: %s\n", VERSION_LONG, GITVERSION);
+	puts("a tiny BPF compiler\n"
+	     "http://www.netsniff-ng.org\n\n"
 	     "Please report bugs to <bugs@netsniff-ng.org>\n"
 	     "Copyright (C) 2011-2013 Daniel Borkmann <dborkma@tik.ee.ethz.ch>,\n"
 	     "Swiss federal institute of technology (ETH Zurich)\n"

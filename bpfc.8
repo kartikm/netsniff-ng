@@ -8,7 +8,7 @@ bpfc \- a Berkeley Packet Filter assembler and compiler
 .PP
 .SH SYNOPSIS
 .PP
-\fB bpfc\fR { [\fIoptions\fR] | [\fIsource-file\fR] }
+\fBbpfc\fR { [\fIoptions\fR] | [\fIsource-file\fR] }
 .PP
 .SH DESCRIPTION
 .PP
@@ -16,15 +16,18 @@ bpfc is a small Berkeley Packet Filter assembler and compiler which is able to
 translate BPF assembler-like mnemonics into a numerical or C-like format,
 that can be read by tools such as netsniff-ng, iptables (xt_bpf) and many
 others. BPF is the one and only upstream filtering construct that is used
-in combination with packet(7) sockets. The Linux kernel and also BSD kernels
-implement "virtual machine" like constructs and JIT compilers that mimic
-a small register-based machine in BPF architecture and execute filter code
-that is, for example, composed by bpfc on a data buffer that is given by network
-packets. The purpose of this is to shift computation in time, so that the
-kernel can drop or truncate incoming packets as early as possible without
-having to push them to user space for further analysis first. Meanwhile,
-BPF constructs also find application in other areas such as in the
-communication between user and kernel space like system call sand-boxing.
+in combination with packet(7) sockets, but also seccomp-BPF for system call
+sandboxing.
+.PP
+The Linux kernel and also BSD kernels implement "virtual machine" like
+constructs and JIT compilers that mimic a small register-based machine in
+BPF architecture and execute filter code that is, for example, composed by
+bpfc on a data buffer that is given by network packets. The purpose of this
+is to shift computation in time, so that the kernel can drop or truncate
+incoming packets as early as possible without having to push them to user
+space for further analysis first. Meanwhile, BPF constructs also find
+application in other areas such as in the communication between user and
+kernel space like system call sand-boxing.
 .PP
 At the time of writing this man page, the only available BPF compiler is
 part of the pcap(3) library and accessible through a high-level filter
@@ -50,7 +53,8 @@ command ''echo "1" > /proc/sys/net/core/bpf_jit_enable'' (normal working
 mode) or ''echo "2" > /proc/sys/net/core/bpf_jit_enable'' (debug mode
 where emitted opcodes of the image are printed to the kernel log). An
 architecture agnostic BPF JIT image disassembler can be found in the kernel
-source tree under: tools/net/bpf_jit_disasm.c
+source tree under ''tools/net/bpf_jit_disasm.c'' or within the netsniff-ng
+Git repository.
 .PP
 .SH OPTIONS
 .PP
@@ -205,6 +209,7 @@ unsigned data structures:
                                        802 - IEEE 802.11 + Prism2 header
                                        803 - IEEE 802.11 + radiotap header
                                        823 - GRE over IP6
+                                       824 - Netlink
                                        [...] See include/uapi/linux/if_arp.h
 .PP
 Note that the majority of BPF extensions are available on Linux only.
@@ -259,6 +264,24 @@ words, some small example filter programs:
   jne #0x16, drop
   pass: ret #-1
   drop: ret #0
+.PP
+.SS A loadable x86_64 seccomp-BPF filter to allow a given set of syscalls:
+.PP
+  ld [4]                  /* offsetof(struct seccomp_data, arch) */
+  jne #0xc000003e, bad    /* AUDIT_ARCH_X86_64 */
+  ld [0]                  /* offsetof(struct seccomp_data, nr) */
+  jeq #15, good           /* __NR_rt_sigreturn */
+  jeq #231, good          /* __NR_exit_group */
+  jeq #60, good           /* __NR_exit */
+  jeq #0, good            /* __NR_read */
+  jeq #1, good            /* __NR_write */
+  jeq #5, good            /* __NR_fstat */
+  jeq #9, good            /* __NR_mmap */
+  jeq #14, good           /* __NR_rt_sigprocmask */
+  jeq #13, good           /* __NR_rt_sigaction */
+  jeq #35, good           /* __NR_nanosleep */
+  bad: ret #0             /* SECCOMP_RET_KILL */
+  good: ret #0x7fff0000   /* SECCOMP_RET_ALLOW */
 .PP
 .SS Allow any (hardware accelerated) VLAN:
 .PP
@@ -325,3 +348,7 @@ Borkmann <dborkma@tik.ee.ethz.ch>.
 .PP
 .SH AUTHOR
 Manpage was written by Daniel Borkmann.
+.PP
+.SH COLOPHON
+This page is part of the Linux netsniff-ng toolkit project. A description of the project,
+and information about reporting bugs, can be found at http://netsniff-ng.org/.

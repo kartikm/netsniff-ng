@@ -20,9 +20,10 @@ _arguments -s -S \
     "(-H --host)"{-H,--host}"[Host/IPv4/IPv6 to lookup AS route to]:host:_hosts" \
     "(-p --port)"{-p,--port}"[Hosts port to lookup AS route to]:port:_gnu_generic" \
     "(-i -d --dev)"{-i,-d,--dev}"[Networking device i.e., eth0]:device:_interfaces" \
+    "(-b --bind)"{-b,--bind}"[IP address to bind to, Must specify -6 for an IPv6 address]" \
     "(-4 --ipv4)"{-4,--ipv4}"[Use IPv4 requests (default)]" \
     "(-6 --ipv6)"{-6,--ipv6}"[Use IPv6 requests]" \
-    "(-n --numeric)"{-n,--nemeric}"[Do not do reverse DNS lookup for hops]" \
+    "(-n --numeric)"{-n,--numeric}"[Do not do reverse DNS lookup for hops]" \
     "(-u --update)"{-u,--update}"[Update GeoIP databases]" \
     "(-L --latitude)"{-L,--latitude}"[Show latitude and longtitude]" \
     "(-N --dns)"{-N,--dns}"[Do a reverse DNS lookup for hops]" \

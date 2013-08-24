@@ -35,9 +35,8 @@
 #include "corking.h"
 #include "ioexact.h"
 #include "curvetun.h"
-#include "ct_servmgmt.h"
-#include "ct_usermgmt.h"
-#include "crypto_auth_hmacsha512256.h"
+#include "curvetun_mgmt.h"
+#include "crypto.h"
 
 extern volatile sig_atomic_t sigint;
 static volatile sig_atomic_t closed_by_server = 0;
@@ -315,10 +314,7 @@ retry:
 		syslog(LOG_INFO, "curvetun client booting!\n");
 	}
 
-	c = xmalloc(sizeof(struct curve25519_struct));
-
-	curve25519_alloc_or_maybe_die(c);
-
+	c = curve25519_tfm_alloc();
 	p = get_serv_store_entry_proto_inf();
 	if (!p)
 		syslog_panic("Cannot proto!\n");
@@ -332,8 +328,7 @@ retry:
 	ret = getaddrinfo(host, port, &hints, &ahead);
 	if (ret < 0) {
 		syslog(LOG_ERR, "Cannot get address info! Retry!\n");
-		curve25519_free(c);
-		xfree(c);
+		curve25519_tfm_free(c);
 		fd = -1;
 		retry_server = 1;
 		closed_by_server = 0;
@@ -364,8 +359,7 @@ retry:
 
 	if (fd < 0) {
 		syslog(LOG_ERR, "Cannot create socket! Retry!\n");
-		curve25519_free(c);
-		xfree(c);
+		curve25519_tfm_free(c);
 		fd = -1;
 		retry_server = 1;
 		closed_by_server = 0;
@@ -422,8 +416,7 @@ retry:
 
 	xfree(buff);
 	close(fd);
-	curve25519_free(c);
-	xfree(c);
+	curve25519_tfm_free(c);
 
 	/* tundev still active */
 	if (closed_by_server && !sigint) {

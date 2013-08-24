@@ -35,6 +35,7 @@
 #include "die.h"
 #include "dev.h"
 #include "sig.h"
+#include "config.h"
 #include "tprintf.h"
 #include "pkt_buff.h"
 #include "proto.h"
@@ -47,8 +48,9 @@
 #include "built_in.h"
 
 struct ctx {
-	char *host, *port, *dev, *payload;
-	int init_ttl, max_ttl, dns_resolv, queries, timeout, totlen, rcvlen;
+	char *host, *port, *dev, *payload, *bind_addr;
+	size_t totlen, rcvlen;
+	int init_ttl, max_ttl, dns_resolv, queries, timeout;
 	int syn, ack, ecn, fin, psh, rst, urg, tos, nofrag, proto, show;
 	int sd_len, dport, latitude;
 };
@@ -59,7 +61,7 @@ struct proto_ops {
 			 const struct sockaddr *src);
 	const struct sock_filter *filter;
 	unsigned int flen;
-	unsigned int min_len_tcp, min_len_icmp;
+	size_t min_len_tcp, min_len_icmp;
 	int (*check)(uint8_t *packet, size_t len, int ttl, int id,
 		     const struct sockaddr *src);
 	void (*handler)(uint8_t *packet, size_t len, int dns_resolv,
@@ -83,12 +85,13 @@ static int check_ipv6(uint8_t *packet, size_t len, int ttl, int id,
 static void handle_ipv6(uint8_t *packet, size_t len, int dns_resolv,
 		        int latitude);
 
-static const char *short_options = "H:p:nNf:m:i:d:q:x:SAEFPURt:Gl:hv46X:ZuL";
+static const char *short_options = "H:p:nNf:m:b:i:d:q:x:SAEFPURt:Gl:hv46X:ZuL";
 static const struct option long_options[] = {
 	{"host",	required_argument,	NULL, 'H'},
 	{"port",	required_argument,	NULL, 'p'},
 	{"init-ttl",	required_argument,	NULL, 'f'},
 	{"max-ttl",	required_argument,	NULL, 'm'},
+	{"bind",	required_argument,	NULL, 'b'},
 	{"dev",		required_argument,	NULL, 'd'},
 	{"num-probes",	required_argument,	NULL, 'q'},
 	{"timeout",	required_argument,	NULL, 'x'},
@@ -180,6 +183,7 @@ static void __noreturn help(void)
 	     " -H|--host <host>        Host/IPv4/IPv6 to lookup AS route to\n"
 	     " -p|--port <port>        Hosts port to lookup AS route to\n"
 	     " -i|-d|--dev <device>    Networking device, e.g. eth0\n"
+	     " -b|--bind <IP>          IP address to bind to, Must specify -6 for an IPv6 address\n"
 	     " -f|--init-ttl <ttl>     Set initial TTL\n"
 	     " -m|--max-ttl <ttl>      Set maximum TTL (def: 30)\n"
 	     " -q|--num-probes <num>   Number of max probes for each hop (def: 2)\n"
@@ -233,8 +237,9 @@ static void __noreturn help(void)
 
 static void __noreturn version(void)
 {
-	printf("\nastraceroute %s, autonomous system trace route utility\n", VERSION_LONG);
-	puts("http://www.netsniff-ng.org\n\n"
+	printf("\nastraceroute %s, Git id: %s\n", VERSION_LONG, GITVERSION);
+	puts("autonomous system trace route utility\n"
+	     "http://www.netsniff-ng.org\n\n"
 	     "Please report bugs to <bugs@netsniff-ng.org>\n"
 	     "Copyright (C) 2011-2013 Daniel Borkmann <dborkma@tik.ee.ethz.ch>\n"
 	     "Swiss federal institute of technology (ETH Zurich)\n"
@@ -246,13 +251,13 @@ static void __noreturn version(void)
 
 static void __assemble_data(uint8_t *packet, size_t len, const char *payload)
 {
-	int i;
+	size_t i;
 
 	if (payload == NULL) {
 		for (i = 0; i < len; ++i)
 			packet[i] = (uint8_t) rand();
 	} else {
-		int lmin = min(len, strlen(payload));
+		size_t lmin = min(len, strlen(payload));
 
 		for (i = 0; i < lmin; ++i)
 			packet[i] = (uint8_t) payload[i];
@@ -419,8 +424,8 @@ static int assemble_ipv6(uint8_t *packet, size_t len, int ttl, int proto,
 	return ntohl(ip6h->ip6_flow) & 0x000fffff;
 }
 
-static int check_ipv4(uint8_t *packet, size_t len, int ttl, int id,
-		      const struct sockaddr *ss)
+static int check_ipv4(uint8_t *packet, size_t len, int ttl __maybe_unused,
+		      int id, const struct sockaddr *ss)
 {
 	struct iphdr *iph = (struct iphdr *) packet;
 	struct iphdr *iph_inner;
@@ -445,7 +450,8 @@ static int check_ipv4(uint8_t *packet, size_t len, int ttl, int id,
 	return len;
 }
 
-static void handle_ipv4(uint8_t *packet, size_t len, int dns_resolv, int latitude)
+static void handle_ipv4(uint8_t *packet, size_t len __maybe_unused,
+			int dns_resolv, int latitude)
 {
 	char hbuff[NI_MAXHOST];
 	struct iphdr *iph = (struct iphdr *) packet;
@@ -485,8 +491,8 @@ static void handle_ipv4(uint8_t *packet, size_t len, int dns_resolv, int latitud
 		printf(" (%f/%f)", geoip4_latitude(sd), geoip4_longitude(sd));
 }
 
-static int check_ipv6(uint8_t *packet, size_t len, int ttl, int id,
-		      const struct sockaddr *ss)
+static int check_ipv6(uint8_t *packet, size_t len, int ttl __maybe_unused,
+		      int id, const struct sockaddr *ss)
 {
 	struct ip6_hdr *ip6h = (struct ip6_hdr *) packet;
 	struct ip6_hdr *ip6h_inner;
@@ -505,13 +511,14 @@ static int check_ipv6(uint8_t *packet, size_t len, int ttl, int id,
 		return -EINVAL;
 
 	ip6h_inner = (struct ip6_hdr *) (packet + sizeof(*ip6h) + sizeof(*icmp6h));
-	if ((ntohl(ip6h_inner->ip6_flow) & 0x000fffff) != id)
+	if ((ntohl(ip6h_inner->ip6_flow) & 0x000fffff) != (uint32_t) id)
 		return -EINVAL;
 
 	return len;
 }
 
-static void handle_ipv6(uint8_t *packet, size_t len, int dns_resolv, int latitude)
+static void handle_ipv6(uint8_t *packet, size_t len __maybe_unused,
+			int dns_resolv, int latitude)
 {
 	char hbuff[NI_MAXHOST];
 	struct ip6_hdr *ip6h = (struct ip6_hdr *) packet;
@@ -564,7 +571,7 @@ static void show_trace_info(struct ctx *ctx, const struct sockaddr_storage *ss,
 	getnameinfo((struct sockaddr *) ss, sizeof(*ss),
 		    hbuffs, sizeof(hbuffs), NULL, 0, NI_NUMERICHOST);
 
-	printf("AS path IPv%d TCP trace from %s to %s:%s (%s) with len %d "
+	printf("AS path IPv%d TCP trace from %s to %s:%s (%s) with len %zu "
 	       "Bytes, %u max hops\n", ctx->proto == IPPROTO_IP ? 4 : 6,
 	       hbuffs, hbuffd, ctx->port, ctx->host, ctx->totlen, ctx->max_ttl);
 
@@ -578,8 +585,9 @@ static void show_trace_info(struct ctx *ctx, const struct sockaddr_storage *ss,
 static int get_remote_fd(struct ctx *ctx, struct sockaddr_storage *ss,
 			 struct sockaddr_storage *sd)
 {
-	int fd = -1, ret, one = 1;
+	int fd = -1, ret, one = 1, af = AF_INET;
 	struct addrinfo hints, *ahead, *ai;
+	unsigned char bind_ip[sizeof(struct in6_addr)];
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = PF_UNSPEC;
@@ -602,8 +610,24 @@ static int get_remote_fd(struct ctx *ctx, struct sockaddr_storage *ss,
 
 		memset(ss, 0, sizeof(*ss));
 		ret = device_address(ctx->dev, ai->ai_family, ss);
-		if (ret < 0)
+		if (ret < 0 && !ctx->bind_addr)
 			panic("Cannot get own device address!\n");
+
+		if (ctx->bind_addr) {
+			if (ctx->proto == IPPROTO_IPV6)
+				af = AF_INET6;
+
+			if (inet_pton(af, ctx->bind_addr, &bind_ip) != 1)
+				panic("Address is invalid!\n");
+
+			if (af == AF_INET6) {
+				struct sockaddr_in6 *ss6 = (struct sockaddr_in6 *) ss;
+				memcpy(&ss6->sin6_addr.s6_addr, &bind_ip, sizeof(struct in6_addr));
+			} else {
+				struct sockaddr_in *ss4 = (struct sockaddr_in *) ss;
+				memcpy(&ss4->sin_addr.s_addr, &bind_ip, sizeof(struct in_addr));
+			}
+		}
 
 		ret = bind(fd, (struct sockaddr *) ss, sizeof(*ss));
 		if (ret < 0)
@@ -684,7 +708,7 @@ static int __process_node(struct ctx *ctx, int fd, int fd_cap, int ttl,
 			timersub(&end, &start, diff);
 
 		ret = recvfrom(fd_cap, pkt_rcv, ctx->rcvlen, 0, NULL, NULL);
-		if (ret < sizeof(struct ethhdr) + af_ops[ctx->proto].min_len_icmp)
+		if (ret < (int) (sizeof(struct ethhdr) + af_ops[ctx->proto].min_len_icmp))
 			return -EIO;
 
 		return af_ops[ctx->proto].check(pkt_rcv + sizeof(struct ethhdr),
@@ -721,7 +745,8 @@ static int __process_time(struct ctx *ctx, int fd, int fd_cap, int ttl,
 			  const struct sockaddr_storage *ss,
 			  const struct sockaddr_storage *sd)
 {
-	int good = 0, i, j = 0, ret = -EIO, idx, ret_good = -EIO;
+	size_t i, j = 0;
+	int good = 0, ret = -EIO, idx, ret_good = -EIO;
 	struct timeval probes[9], *tmp, sum, res;
 	uint8_t *trash = xmalloc(ctx->rcvlen);
 	char *cwait[] = { "-", "\\", "|", "/" };
@@ -742,7 +767,7 @@ static int __process_time(struct ctx *ctx, int fd, int fd_cap, int ttl,
 			good++;
 		}
 
-		if (good == 0 && ctx->queries == i)
+		if (good == 0 && ctx->queries == (int) i)
 			break;
 
 		usleep(50000);
@@ -831,7 +856,8 @@ static int __process_ttl(struct ctx *ctx, int fd, int fd_cap, int ttl,
 			 const struct sockaddr_storage *ss,
 			 const struct sockaddr_storage *sd)
 {
-	int ret = -EIO, i;
+	int ret = -EIO;
+	size_t i;
 	const int inner_protos[] = {
 		IPPROTO_TCP,
 		IPPROTO_ICMP,
@@ -920,6 +946,7 @@ int main(int argc, char **argv)
 	ctx.payload = NULL;
 	ctx.dev = xstrdup("eth0");
 	ctx.port = xstrdup("80");
+	ctx.bind_addr = NULL;
 
 	while ((c = getopt_long(argc, argv, short_options, long_options,
 		&opt_index)) != EOF) {
@@ -966,6 +993,9 @@ int main(int argc, char **argv)
 			ctx.max_ttl = atoi(optarg);
 			if (ctx.max_ttl <= 0)
 				help();
+			break;
+		case 'b':
+			ctx.bind_addr = xstrdup(optarg);
 			break;
 		case 'i':
 		case 'd':
@@ -1019,8 +1049,8 @@ int main(int argc, char **argv)
 			ctx.payload = xstrdup(optarg);
 			break;
 		case 'l':
-			ctx.totlen = atoi(optarg);
-			if (ctx.totlen <= 0)
+			ctx.totlen = strtoul(optarg, NULL, 10);
+			if (ctx.totlen == 0)
 				help();
 			break;
 		case '?':
@@ -1071,6 +1101,7 @@ int main(int argc, char **argv)
 	free(ctx.dev);
 	free(ctx.host);
 	free(ctx.port);
+	free(ctx.bind_addr);
 	free(ctx.payload);
 
 	return ret;

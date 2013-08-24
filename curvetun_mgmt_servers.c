@@ -18,8 +18,8 @@
 #include "xmalloc.h"
 #include "curvetun.h"
 #include "curve.h"
+#include "curvetun_mgmt_servers.h"
 #include "crypto.h"
-#include "ct_servmgmt.h"
 
 struct server_store {
 	int udp;
@@ -60,7 +60,6 @@ enum parse_states {
 
 static int parse_line(char *line, char *homedir)
 {
-	int ret;
 	char *str;
 	enum parse_states s = PARSE_ALIAS;
 	struct server_store *elem;
@@ -101,12 +100,7 @@ static int parse_line(char *line, char *homedir)
 				return -EINVAL;
 			memcpy(elem->publickey, pkey, sizeof(elem->publickey));
 			memcpy(elem->auth_token, pkey, sizeof(elem->auth_token));
-			ret = curve25519_proto_init(&elem->proto_inf,
-					 	    elem->publickey,
-						    sizeof(elem->publickey),
-						    homedir, 1);
-			if (ret)
-				return -EIO;
+			curve25519_proto_init(&elem->proto_inf, elem->publickey, sizeof(elem->publickey));
 			s = PARSE_DONE;
 			break;
 		case PARSE_DONE:

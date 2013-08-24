@@ -98,9 +98,15 @@ retry:
 	ring->mm_len = ring->layout.tp_block_size * ring->layout.tp_block_nr;
 
 	if (verbose) {
-		printf("RX: %.2Lf MiB, %u Frames, each %u Byte allocated\n",
-		       (long double) ring->mm_len / (1 << 20),
-		       ring->layout.tp_frame_nr, ring->layout.tp_frame_size);
+		if (!v3) {
+			printf("RX,V2: %.2Lf MiB, %u Frames, each %u Byte allocated\n",
+			       (long double) ring->mm_len / (1 << 20),
+			       ring->layout.tp_frame_nr, ring->layout.tp_frame_size);
+		} else {
+			printf("RX,V3: %.2Lf MiB, %u Blocks, each %u Byte allocated\n",
+			       (long double) ring->mm_len / (1 << 20),
+			       ring->layout.tp_block_nr, ring->layout.tp_block_size);
+		}
 	}
 }
 
@@ -131,7 +137,7 @@ void bind_rx_ring(int sock, struct ring *ring, int ifindex)
 	bind_ring_generic(sock, ring, ifindex);
 }
 
-void sock_rx_net_stats(int sock)
+void sock_rx_net_stats(int sock, unsigned long seen)
 {
 	int ret;
 	bool v3 = get_sockopt_tpacket(sock) == TPACKET_V3;
@@ -147,11 +153,12 @@ void sock_rx_net_stats(int sock)
 		uint64_t packets = stats.k3.tp_packets;
 		uint64_t drops = stats.k3.tp_drops;
 
-		printf("\r%12ld  packets incoming\n", packets);
+		printf("\r%12ld  packets incoming (%ld unread on exit)\n",
+		       v3 ? seen : packets, v3 ? packets - seen : 0);
 		printf("\r%12ld  packets passed filter\n", packets - drops);
 		printf("\r%12ld  packets failed filter (out of space)\n", drops);
 		if (stats.k3.tp_packets > 0)
-			printf("\r%12.4lf%\% packet droprate\n",
+			printf("\r%12.4lf%% packet droprate\n",
 			       (1.0 * drops / packets) * 100.0);
 	}
 }
