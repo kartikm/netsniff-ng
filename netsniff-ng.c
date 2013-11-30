@@ -950,23 +950,18 @@ static void recv_only_or_dump(struct ctx *ctx)
 	drop_privileges(ctx->enforce, ctx->uid, ctx->gid);
 
 	if (dump_to_pcap(ctx)) {
-		__label__ try_file;
 		struct stat stats;
 
-		fmemset(&stats, 0, sizeof(stats));
 		ret = stat(ctx->device_out, &stats);
-		if (ret < 0) {
+		if (ret < 0)
 			ctx->dump_dir = 0;
-			goto try_file;
-		}
+		else
+			ctx->dump_dir = S_ISDIR(stats.st_mode);
 
-		ctx->dump_dir = S_ISDIR(stats.st_mode);
-		if (ctx->dump_dir) {
+		if (ctx->dump_dir)
 			fd = begin_multi_pcap_file(ctx);
-		} else {
-		try_file:
+		else
 			fd = begin_single_pcap_file(ctx);
-		}
 	}
 
 	printf("Running! Hang up with ^C!\n\n");
@@ -1075,7 +1070,7 @@ static void __noreturn help(void)
 	     "  -r|--rand                      Randomize packet forwarding order (dev->dev)\n"
 	     "  -M|--no-promisc                No promiscuous mode for netdev\n"
 	     "  -A|--no-sock-mem               Don't tune core socket memory\n"
-	     "  -m|--mmap                      Mmap(2) pcap file i.e., for replaying pcaps\n"
+	     "  -m|--mmap                      Mmap(2) pcap file I/O, e.g. for replaying pcaps\n"
 	     "  -G|--sg                        Scatter/gather pcap file I/O\n"
 	     "  -c|--clrw                      Use slower read(2)/write(2) I/O\n"
 	     "  -S|--ring-size <size>          Specify ring size to: <num>KiB/MiB/GiB\n"
@@ -1220,9 +1215,8 @@ int main(int argc, char **argv)
 				ctx.reserve_size = 1 << 30;
 			else
 				panic("Syntax error in ring size param!\n");
-			*ptr = 0;
 
-			ctx.reserve_size *= strtol(optarg, NULL, 0);
+			ctx.reserve_size *= strtoul(optarg, NULL, 0);
 			break;
 		case 'b':
 			cpu_tmp = strtol(optarg, NULL, 0);
@@ -1266,10 +1260,10 @@ int main(int argc, char **argv)
 				 PRINT_HEX_ASCII : PRINT_ASCII;
 			break;
 		case 'k':
-			ctx.kpull = strtol(optarg, NULL, 0);
+			ctx.kpull = strtoul(optarg, NULL, 0);
 			break;
 		case 'n':
-			frame_count_max = strtol(optarg, NULL, 0);
+			frame_count_max = strtoul(optarg, NULL, 0);
 			break;
 		case 'F':
 			ptr = optarg;
@@ -1306,8 +1300,7 @@ int main(int argc, char **argv)
 				panic("Syntax error in time/size param!\n");
 			}
 
-			*ptr = 0;
-			ctx.dump_interval *= strtol(optarg, NULL, 0);
+			ctx.dump_interval *= strtoul(optarg, NULL, 0);
 			break;
 		case 'V':
 			ctx.verbose = 1;
@@ -1425,6 +1418,9 @@ int main(int argc, char **argv)
 		set_system_socket_memory(vals, array_size(vals));
 	if (!ctx.enforce)
 		xlockme();
+
+	if (ctx.verbose)
+		printf("pcap file I/O method: %s\n", pcap_ops_group_to_str[ctx.pcap]);
 
 	main_loop(&ctx);
 

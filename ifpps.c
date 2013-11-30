@@ -45,7 +45,7 @@ struct ifstat {
 	long long unsigned int tx_fifo, tx_colls, tx_carrier;
 	uint64_t mem_free, mem_total, mem_active, mem_inactive;
 	uint64_t swap_total, swap_free, swap_cached;
-	uint32_t irq_nr, procs_total, procs_run, procs_iow, cswitch;
+	uint32_t procs_total, procs_run, procs_iow, cswitch;
 	struct wifi_stat wifi;
 	/*
 	 * Pointer members need to be last in order for stats_zero() to work
@@ -71,11 +71,11 @@ static struct ifstat stats_old, stats_new, stats_delta;
 static struct cpu_hit *cpu_hits;
 static struct avg_stat stats_avg;
 static int stats_loop = 0;
-static int show_median = 0;
+static int show_median = 0, show_percentage = 0;
 static WINDOW *stats_screen = NULL;
 static struct utsname uts;
 
-static const char *short_options = "d:n:t:clmpWvh";
+static const char *short_options = "d:n:t:clmopPWvh";
 static const struct option long_options[] = {
 	{"dev",			required_argument,	NULL, 'd'},
 	{"num-cpus",		required_argument,	NULL, 'n'},
@@ -83,7 +83,9 @@ static const struct option long_options[] = {
 	{"csv",			no_argument,		NULL, 'c'},
 	{"loop",		no_argument,		NULL, 'l'},
 	{"median",		no_argument,		NULL, 'm'},
+	{"omit-header",		no_argument,		NULL, 'o'},
 	{"promisc",		no_argument,		NULL, 'p'},
+	{"percentage",		no_argument,		NULL, 'P'},
 	{"no-warn",		no_argument,		NULL, 'W'},
 	{"version",		no_argument,		NULL, 'v'},
 	{"help",		no_argument,		NULL, 'h'},
@@ -120,7 +122,9 @@ static void __noreturn help(void)
 	     "  -c|--csv               Output to terminal as Gnuplot-ready data\n"
 	     "  -l|--loop              Continuous CSV output\n"
 	     "  -m|--median            Display median values\n"
+	     "  -o|--omit-header       Do not print the CSV header\n"
 	     "  -p|--promisc           Promiscuous mode\n"
+	     "  -P|--percentage        Show percentage of theoretical line rate\n"
 	     "  -W|--no-warn           Suppress warnings\n"
 	     "  -v|--version           Print version and exit\n"
 	     "  -h|--help              Print this help and exit\n\n"
@@ -168,7 +172,7 @@ static inline int padding_from_num(int n)
 #define STATS_ALLOC1(member)	\
 	do { stats->member = xzmalloc(cpus * sizeof(*(stats->member))); } while (0)
 
-static void stats_alloc(struct ifstat *stats, int cpus)
+static void stats_alloc(struct ifstat *stats, unsigned int cpus)
 {
 	STATS_ALLOC1(irqs);
 	STATS_ALLOC1(irqs_srx);
@@ -184,7 +188,7 @@ static void stats_alloc(struct ifstat *stats, int cpus)
 #define STATS_ZERO1(member)	\
 	do { memset(stats->member, 0, cpus * sizeof(*(stats->member))); } while (0)
 
-static void stats_zero(struct ifstat *stats, int cpus)
+static void stats_zero(struct ifstat *stats, unsigned int cpus)
 {
 	/* Only clear the non-pointer members */
 	memset(stats, 0, offsetof(struct ifstat, irqs));
@@ -259,7 +263,8 @@ static int stats_proc_net_dev(const char *ifname, struct ifstat *stats)
 
 static int stats_proc_interrupts(char *ifname, struct ifstat *stats)
 {
-	int ret = -EINVAL, i, cpus, try = 0;
+	int ret = -EINVAL, try = 0;
+	unsigned int i, cpus;
 	char *ptr, *buff;
 	bool seen = false;
 	size_t buff_len;
@@ -279,17 +284,15 @@ retry:
 
 	while (fgets(buff, buff_len, fp) != NULL) {
 		buff[buff_len - 1] = 0;
-		ptr = buff;
 
 		if (strstr(buff, ifname) == NULL)
 			continue;
 
-		/* XXX: remove this one here */
-		stats->irq_nr = strtol(ptr, &ptr, 10);
-		bug_on(stats->irq_nr == 0);
+		ptr = strchr(buff, ':');
+		if (!ptr)
+			continue;
+		ptr++;
 
-		if (ptr)
-			ptr++;
 		for (i = 0; i < cpus && ptr; ++i) {
 			if (seen)
 				stats->irqs[i] += strtol(ptr, &ptr, 10);
@@ -322,7 +325,7 @@ done:
 
 static int stats_proc_softirqs(struct ifstat *stats)
 {
-	int i, cpus;
+	unsigned int i, cpus;
 	char *ptr, *buff;
 	size_t buff_len;
 	FILE *fp;
@@ -416,7 +419,7 @@ static int stats_proc_memory(struct ifstat *stats)
 
 static int stats_proc_system(struct ifstat *stats)
 {
-	int cpu, cpus;
+	unsigned int cpu, cpus;
 	char *ptr, buff[256];
 	FILE *fp;
 
@@ -527,14 +530,17 @@ static int stats_wireless(const char *ifname, struct ifstat *stats)
 		if (sizeof(diff->member) != sizeof(new->member) || \
 		    sizeof(diff->member) != sizeof(old->member)) \
 			bug(); \
-		bug_on((new->member - old->member) > (new->member)); \
-		DIFF1(member); \
+		if ((new->member - old->member) > (new->member)) { \
+			diff->member = 0; \
+		} else { \
+			DIFF1(member); \
+		} \
 	} while (0)
 
 static void stats_diff(struct ifstat *old, struct ifstat *new,
 		       struct ifstat *diff)
 {
-	int cpus, i;
+	unsigned int cpus, i;
 
 	DIFF(rx_bytes);
 	DIFF(rx_packets);
@@ -592,7 +598,7 @@ static void stats_fetch(const char *ifname, struct ifstat *stats)
 
 static void stats_sample_generic(const char *ifname, uint64_t ms_interval)
 {
-	int cpus = get_number_cpus();
+	unsigned int cpus = get_number_cpus();
 
 	stats_zero(&stats_old, cpus);
 	stats_zero(&stats_new, cpus);
@@ -654,9 +660,9 @@ static int cmp_irqs_abs(const void *p1, const void *p2)
 }
 
 static void stats_top(const struct ifstat *rel, const struct ifstat *abs,
-		      int cpus)
+		      unsigned int cpus)
 {
-	int i;
+	unsigned int i;
 
 	memset(&stats_avg, 0, sizeof(stats_avg));
 
@@ -690,12 +696,11 @@ static void stats_top(const struct ifstat *rel, const struct ifstat *abs,
 }
 
 static void screen_header(WINDOW *screen, const char *ifname, int *voff,
-			  uint64_t ms_interval, unsigned int top_cpus)
+			  u32 rate, uint64_t ms_interval, unsigned int top_cpus)
 {
 	size_t len = 0;
 	char buff[64], machine[64];
 	struct ethtool_drvinfo drvinf;
-	u32 rate = device_bitrate(ifname);
 	int link = ethtool_link(ifname);
 	unsigned int cpus = get_number_cpus();
 
@@ -743,6 +748,20 @@ static void screen_net_dev_rel(WINDOW *screen, const struct ifstat *rel,
 		  rel->tx_packets, rel->tx_drops, rel->tx_errors);
 
 	attroff(A_REVERSE);
+}
+
+static void screen_net_dev_percentage(WINDOW *screen, const struct ifstat *rel,
+				      int *voff, u32 rate)
+{
+	mvwprintw(screen, (*voff)++, 0,
+		  "  rx: %15.2llf%% of line rate  "
+		  "                                                  ",
+		  rate ? ((((long double) rel->rx_bytes) / 125000) / rate) * 100.0 : 0.0);
+
+	mvwprintw(screen, (*voff)++, 0,
+		  "  tx: %15.2llf%% of line rate  "
+		  "                                                  ",
+		  rate ? ((((long double) rel->tx_bytes) / 125000) / rate) * 100.0 : 0.0);
 }
 
 static void screen_net_dev_abs(WINDOW *screen, const struct ifstat *abs,
@@ -825,11 +844,11 @@ static void screen_percpu_states_one(WINDOW *screen, const struct ifstat *rel,
 } while (0)
 
 static void screen_percpu_states(WINDOW *screen, const struct ifstat *rel,
-				 const struct avg_stat *avg, int top_cpus,
-				 int *voff)
+				 const struct avg_stat *avg,
+				 unsigned int top_cpus, int *voff)
 {
-	int i;
-	int cpus = get_number_cpus();
+	unsigned int i;
+	unsigned int cpus = get_number_cpus();
 	int max_padd = padding_from_num(cpus);
 	uint64_t all;
 
@@ -913,11 +932,11 @@ static void screen_percpu_irqs_rel_one(WINDOW *screen, const struct ifstat *rel,
 }
 
 static void screen_percpu_irqs_rel(WINDOW *screen, const struct ifstat *rel,
-				   const struct avg_stat *avg, int top_cpus,
-				   int *voff)
+				   const struct avg_stat *avg,
+				   unsigned int top_cpus, int *voff)
 {
-	int i;
-	int cpus = get_number_cpus();
+	unsigned int i;
+	unsigned int cpus = get_number_cpus();
 	int max_padd = padding_from_num(cpus);
 
 	screen_percpu_irqs_rel_one(screen, rel, voff, cpu_hits[0].idx, "+");
@@ -974,11 +993,11 @@ static void screen_percpu_irqs_abs_one(WINDOW *screen, const struct ifstat *abs,
 }
 
 static void screen_percpu_irqs_abs(WINDOW *screen, const struct ifstat *abs,
-				   const struct avg_stat *avg, int top_cpus,
-				   int *voff)
+				   const struct avg_stat *avg,
+				   unsigned int top_cpus, int *voff)
 {
-	int i;
-	int cpus = get_number_cpus();
+	unsigned int i;
+	unsigned int cpus = get_number_cpus();
 	int max_padd = padding_from_num(cpus);
 
 	screen_percpu_irqs_abs_one(screen, abs, voff, cpu_hits[0].idx, "+");
@@ -1049,10 +1068,15 @@ static void screen_update(WINDOW *screen, const char *ifname, const struct ifsta
 
 	qsort(cpu_hits, cpus, sizeof(*cpu_hits), cmp_hits);
 
-	screen_header(screen, ifname, &voff, ms_interval, top_cpus);
+	screen_header(screen, ifname, &voff, rate, ms_interval, top_cpus);
 
 	voff++;
 	screen_net_dev_rel(screen, rel, &voff);
+
+	if (show_percentage) {
+		voff++;
+		screen_net_dev_percentage(screen, rel, &voff, rate);
+	}
 
 	voff++;
 	screen_net_dev_abs(screen, abs, &voff);
@@ -1097,7 +1121,8 @@ static void screen_update(WINDOW *screen, const char *ifname, const struct ifsta
 }
 
 static int screen_main(const char *ifname, uint64_t ms_interval,
-		       unsigned int top_cpus, bool suppress_warnings)
+		       unsigned int top_cpus, bool suppress_warnings,
+		       bool omit_header __maybe_unused)
 {
 	int first = 1, key;
 	u32 rate = device_bitrate(ifname);
@@ -1128,7 +1153,7 @@ static int screen_main(const char *ifname, uint64_t ms_interval,
 
 static void term_csv(const struct ifstat *rel, const struct ifstat *abs)
 {
-	int cpus, i;
+	unsigned int cpus, i;
 
 	printf("%ld ", time(NULL));
 
@@ -1198,7 +1223,7 @@ static void term_csv(const struct ifstat *rel, const struct ifstat *abs)
 static void term_csv_header(const char *ifname, const struct ifstat *abs,
 			    uint64_t ms_interval)
 {
-	int cpus, i, j = 1;
+	unsigned int cpus, i, j = 1;
 
 	printf("# gnuplot dump (#col:description)\n");
 	printf("# networking interface: %s\n", ifname);
@@ -1270,15 +1295,14 @@ static void term_csv_header(const char *ifname, const struct ifstat *abs,
 
 static int term_main(const char *ifname, uint64_t ms_interval,
 		     unsigned int top_cpus __maybe_unused,
-		     bool suppress_warnings __maybe_unused)
+		     bool suppress_warnings __maybe_unused,
+		     bool omit_header)
 {
-	int first = 1;
-
 	do {
 		stats_sample_generic(ifname, ms_interval);
 
-		if (first) {
-			first = 0;
+		if (!omit_header) {
+			omit_header = true;
 			term_csv_header(ifname, &stats_new, ms_interval);
 		}
 
@@ -1296,8 +1320,10 @@ int main(int argc, char **argv)
 	uint64_t interval = 1000;
 	char *ifname = NULL;
 	bool suppress_warnings = false;
+	bool omit_header = false;
 	int (*func_main)(const char *ifname, uint64_t ms_interval,
-			 unsigned int top_cpus, bool suppress_warnings);
+			 unsigned int top_cpus, bool suppress_warnings,
+			 bool omit_header);
 
 	func_main = screen_main;
 
@@ -1333,11 +1359,17 @@ int main(int argc, char **argv)
 		case 'p':
 			promisc = 1;
 			break;
+		case 'P':
+			show_percentage = 1;
+			break;
 		case 'm':
 			show_median = 1;
 			break;
 		case 'c':
 			func_main = term_main;
+			break;
+		case 'o':
+			omit_header = true;
 			break;
 		case '?':
 			switch (optopt) {
@@ -1384,7 +1416,7 @@ int main(int argc, char **argv)
 
 	if (promisc)
 		ifflags = device_enter_promiscuous_mode(ifname);
-	ret = func_main(ifname, interval, top_cpus, suppress_warnings);
+	ret = func_main(ifname, interval, top_cpus, suppress_warnings, omit_header);
 	if (promisc)
 		device_leave_promiscuous_mode(ifname, ifflags);
 
