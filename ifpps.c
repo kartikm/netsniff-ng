@@ -96,6 +96,8 @@ static void signal_handler(int number)
 {
 	switch (number) {
 	case SIGINT:
+	case SIGQUIT:
+	case SIGTERM:
 		sigint = 1;
 		break;
 	case SIGHUP:
@@ -271,13 +273,13 @@ static int stats_proc_interrupts(char *ifname, struct ifstat *stats)
 	struct ethtool_drvinfo drvinf;
 	FILE *fp;
 
-	fp = fopen("/proc/interrupts", "r");
-	if (!fp)
-		panic("Cannot open /proc/interrupts!\n");
-
 	cpus = get_number_cpus();
 	buff_len = cpus * 128;
 	buff = xmalloc(buff_len);
+
+	fp = fopen("/proc/interrupts", "r");
+	if (!fp)
+		panic("Cannot open /proc/interrupts!\n");
 retry:
 	fseek(fp, 0, SEEK_SET);
 	memset(buff, 0, buff_len);
@@ -1401,6 +1403,8 @@ int main(int argc, char **argv)
 		panic("This is no networking device!\n");
 
 	register_signal(SIGINT, signal_handler);
+	register_signal(SIGQUIT, signal_handler);
+	register_signal(SIGSTOP, signal_handler);
 	register_signal(SIGHUP, signal_handler);
 
 	cpus = get_number_cpus();
