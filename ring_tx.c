@@ -45,7 +45,7 @@ void destroy_tx_ring(int sock, struct ring *ring)
 	xfree(ring->frames);
 }
 
-void setup_tx_ring_layout(int sock, struct ring *ring, unsigned int size,
+void setup_tx_ring_layout(int sock, struct ring *ring, size_t size,
 			  bool jumbo_support)
 {
 	fmemset(&ring->layout, 0, sizeof(ring->layout));
@@ -68,7 +68,7 @@ void setup_tx_ring_layout(int sock, struct ring *ring, unsigned int size,
 	ring_verify_layout(ring);
 }
 
-void create_tx_ring(int sock, struct ring *ring, int verbose)
+void create_tx_ring(int sock, struct ring *ring, bool verbose)
 {
 	int ret;
 retry:
@@ -86,7 +86,7 @@ retry:
 	if (ret < 0)
 		panic("Cannot allocate TX_RING!\n");
 
-	ring->mm_len = ring->layout.tp_block_size * ring->layout.tp_block_nr;
+	ring->mm_len = (size_t) ring->layout.tp_block_size * ring->layout.tp_block_nr;
 
 	if (verbose) {
 		printf("TX,V2: %.2Lf MiB, %u Frames, each %u Byte allocated\n",

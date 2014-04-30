@@ -54,9 +54,10 @@ enum dump_mode {
 
 struct ctx {
 	char *device_in, *device_out, *device_trans, *filter, *prefix;
-	int cpu, rfraw, dump, print_mode, dump_dir, packet_type, verbose;
-	unsigned long kpull, dump_interval, reserve_size, tx_bytes, tx_packets;
-	bool randomize, promiscuous, enforce, jumbo, dump_bpf;
+	int cpu, rfraw, dump, print_mode, dump_dir, packet_type;
+	unsigned long kpull, dump_interval, tx_bytes, tx_packets;
+	size_t reserve_size;
+	bool randomize, promiscuous, enforce, jumbo, dump_bpf, verbose;
 	enum pcap_ops_groups pcap; enum dump_mode dump_mode;
 	uid_t uid; gid_t gid; uint32_t link_type, magic;
 };
@@ -170,7 +171,8 @@ static void pcap_to_xmit(struct ctx *ctx)
 {
 	uint8_t *out = NULL;
 	int irq, ifindex, fd = 0, ret;
-	unsigned int size, it = 0;
+	size_t size;
+	unsigned int it = 0;
 	unsigned long trunced = 0;
 	struct ring tx_ring;
 	struct frame_map *hdr;
@@ -250,7 +252,7 @@ static void pcap_to_xmit(struct ctx *ctx)
 		interval = ctx->kpull;
 
 	set_itimer_interval_value(&itimer, 0, interval);
-	setitimer(ITIMER_REAL, &itimer, NULL); 
+	setitimer(ITIMER_REAL, &itimer, NULL);
 
 	drop_privileges(ctx->enforce, ctx->uid, ctx->gid);
 
@@ -344,7 +346,8 @@ static void receive_to_xmit(struct ctx *ctx)
 	short ifflags = 0;
 	uint8_t *in, *out;
 	int rx_sock, ifindex_in, ifindex_out, ret;
-	unsigned int size_in, size_out, it_in = 0, it_out = 0;
+	size_t size_in, size_out;
+	unsigned int it_in = 0, it_out = 0;
 	unsigned long frame_count = 0;
 	struct frame_map *hdr_in, *hdr_out;
 	struct ring tx_ring, rx_ring;
@@ -393,7 +396,7 @@ static void receive_to_xmit(struct ctx *ctx)
 
 	dissector_init_all(ctx->print_mode);
 
-	 if (ctx->promiscuous)
+	if (ctx->promiscuous)
 		ifflags = device_enter_promiscuous_mode(ctx->device_in);
 
 	if (ctx->kpull)
@@ -421,8 +424,8 @@ static void receive_to_xmit(struct ctx *ctx)
 			hdr_out = tx_ring.frames[it_out].iov_base;
 			out = ((uint8_t *) hdr_out) + TPACKET2_HDRLEN - sizeof(struct sockaddr_ll);
 
-			for (; !user_may_pull_from_tx(tx_ring.frames[it_out].iov_base) &&
-			       likely(!sigint);) {
+			while (!user_may_pull_from_tx(tx_ring.frames[it_out].iov_base) &&
+			       likely(!sigint)) {
 				if (ctx->randomize)
 					next_rnd_slot(&it_out, &tx_ring);
 				else {
@@ -802,7 +805,7 @@ static void print_pcap_file_stats(int sock, struct ctx *ctx)
 	ret = getsockopt(sock, SOL_PACKET, PACKET_STATISTICS, &kstats, &slen);
 	if (unlikely(ret))
 		panic("Cannot get packet statistics!\n");
-	
+
 	if (ctx->print_mode == PRINT_NONE) {
 		printf(".(+%u/-%u)", kstats.tp_packets - kstats.tp_drops,
 		       kstats.tp_drops);
@@ -879,7 +882,8 @@ static void recv_only_or_dump(struct ctx *ctx)
 {
 	short ifflags = 0;
 	int sock, irq, ifindex, fd = 0, ret;
-	unsigned int size, it = 0;
+	size_t size;
+	unsigned int it = 0;
 	struct ring rx_ring;
 	struct pollfd rx_poll;
 	struct sock_fprog bpf_ops;
@@ -1296,7 +1300,7 @@ int main(int argc, char **argv)
 			ctx.dump_interval *= strtoul(optarg, NULL, 0);
 			break;
 		case 'V':
-			ctx.verbose = 1;
+			ctx.verbose = true;
 			break;
 		case 'B':
 			ctx.dump_bpf = true;

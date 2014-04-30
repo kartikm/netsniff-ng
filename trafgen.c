@@ -56,7 +56,8 @@
 
 struct ctx {
 	bool rand, rfraw, jumbo_support, verbose, smoke_test, enforce, qdisc_path;
-	unsigned long kpull, num, reserve_size;
+	size_t reserve_size;
+	unsigned long num;
 	unsigned int cpus;
 	uid_t uid; gid_t gid;
 	char *device, *device_trans, *rhost;
@@ -156,7 +157,6 @@ static void __noreturn help(void)
 	     "  -P|--cpus <uint>               Specify number of forks(<= CPUs) (def: #CPUs)\n"
 	     "  -t|--gap <time>                Set approx. interpacket gap (s/ms/us/ns, def: us)\n"
 	     "  -S|--ring-size <size>          Manually set mmap size (KiB/MiB/GiB)\n"
-	     "  -k|--kernel-pull <uint>        Kernel batch interval in us (def: 10us)\n"
 	     "  -E|--seed <uint>               Manually set srand(3) seed\n"
 	     "  -u|--user <userid>             Drop privileges and change to userid\n"
 	     "  -g|--group <groupid>           Drop privileges and change to groupid\n"
@@ -591,7 +591,8 @@ static void xmit_fastpath_or_die(struct ctx *ctx, int cpu, unsigned long orig_nu
 	int ifindex = device_ifindex(ctx->device);
 	uint8_t *out = NULL;
 	unsigned int it = 0;
-	unsigned long num = 1, i = 0, size;
+	unsigned long num = 1, i = 0;
+	size_t size;
 	struct ring tx_ring;
 	struct frame_map *hdr;
 	struct timeval start, end, diff;
@@ -946,7 +947,8 @@ int main(int argc, char **argv)
 			ctx.enforce = true;
 			break;
 		case 'k':
-			ctx.kpull = strtoul(optarg, NULL, 0);
+			printf("Option -k/--kernel-pull is no longer used and "
+			       "will be removed in a future release!\n");
 			break;
 		case 'E':
 			seed = strtoul(optarg, NULL, 0);
@@ -1010,7 +1012,7 @@ int main(int argc, char **argv)
 			else
 				panic("Syntax error in ring size param!\n");
 
-			ctx.reserve_size *= strtol(optarg, NULL, 0);
+			ctx.reserve_size *= strtoul(optarg, NULL, 0);
 			break;
 		case '?':
 			switch (optopt) {
