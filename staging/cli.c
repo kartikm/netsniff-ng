@@ -27,13 +27,13 @@ void mz_cli_init()
 {
 	amp_head = automops_init();
 	
-	// Initialize default credentials (will be overwritten by mausezahn.cfg)
+	// Initialize default credentials (will be overwritten by mausezahn.conf)
 	strcpy(mz_username, MZ_DEFAULT_USERNAME);
 	strcpy(mz_password, MZ_DEFAULT_PASSWORD);
 	strcpy(mz_enable, MZ_DEFAULT_ENABLE_PASSWORD);
 	
 	// read login credentials from config file
-	if (cli_read_cfg("mausezahn.cfg")) {
+	if (cli_read_cfg("mausezahn.conf")) {
 		fprintf(stderr, "mz: Problems opening config file. Will use defaults\n");
 	}
 
@@ -532,7 +532,7 @@ int cli()
    // Listen on port mz_port (default: 25542, towel day)
    memset(&servaddr, 0, sizeof(servaddr));
    servaddr.sin_family = AF_INET;
-   servaddr.sin_addr.s_addr = htonl(INADDR_ANY);  // TODO: specified interface
+   inet_aton(mz_listen_addr, &servaddr.sin_addr);
    servaddr.sin_port = htons(mz_port); 
    bind(s, (struct sockaddr *)&servaddr, sizeof(servaddr));
 
