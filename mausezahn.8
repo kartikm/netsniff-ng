@@ -230,7 +230,10 @@ Options supported in the configuration file are:
    user			Username for authentication (default: mz)
    password		Password for authentication (default: mz)
    enable		     Password to enter privilege mode (default: mops)
-   cli-device		Interface to bind to (default: all) *not fully implemented*
+   port			The listening port for the CLI (default: 25542)
+   management-only	Set management interface (no data traffic is allowed to pass through)
+   cli-device		Interface to bind CLI to (default: all) *not fully implemented*
+   automops         Path to automops file (contains XML data describing protocols) *in development*
 
 .SS Example:
 .PP
@@ -238,6 +241,7 @@ Options supported in the configuration file are:
  user = mzadmin
  password = mzpasswd
  enable = privilege-mode-passwd
+ port = 65000
 .PP
 .SH INTERACTIVE MODE HOWTO
 .PP
