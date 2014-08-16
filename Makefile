@@ -16,7 +16,7 @@ endif
 VERSION = 0
 PATCHLEVEL = 5
 SUBLEVEL = 9
-EXTRAVERSION = -rc2
+EXTRAVERSION = -rc3
 NAME = Cilonen
 
 TOOLS ?= $(CONFIG_TOOLS)
@@ -106,6 +106,9 @@ LDFLAGS   ?=
 ifeq ("$(origin CROSS_LD_LIBRARY_PATH)", "command line")
   LDFLAGS += -L$(CROSS_LD_LIBRARY_PATH)
 endif
+
+CHECKFLAGS = -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix \
+	     -Wbitwise -Wnoreturn-void
 
 VERSION_SHORT  =  $(VERSION).$(PATCHLEVEL).$(SUBLEVEL)$(EXTRAVERSION)
 VERSION_STRING = "$(VERSION_SHORT)$(CONFIG_RC)"

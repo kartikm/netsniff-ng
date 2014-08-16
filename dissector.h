@@ -16,6 +16,7 @@
 
 #include "ring.h"
 #include "tprintf.h"
+#include "linktype.h"
 
 #define PRINT_NORM		0
 #define PRINT_LESS		1
@@ -56,6 +57,7 @@ static inline void __show_frame_hdr(uint8_t *packet, size_t len, int linktype,
 	char tmp[IFNAMSIZ];
 	union tpacket_uhdr hdr;
 	uint8_t pkttype = s_ll->sll_pkttype;
+	bool is_nl;
 
 	if (mode == PRINT_NONE)
 		return;
@@ -66,7 +68,8 @@ static inline void __show_frame_hdr(uint8_t *packet, size_t len, int linktype,
 	 * it originally was set in the kernel. Thus, use nlmsghdr->nlmsg_pid to
 	 * restore the type.
 	 */
-	if (linktype == AF_NETLINK && len >= sizeof(struct nlmsghdr)) {
+	is_nl = (linktype == LINKTYPE_NETLINK && len >= sizeof(struct nlmsghdr));
+	if (is_nl && pkttype == PACKET_OUTGOING) {
 		struct nlmsghdr *hdr = (struct nlmsghdr *) packet;
 		pkttype = hdr->nlmsg_pid == 0 ? PACKET_KERNEL : PACKET_USER;
 	}
@@ -77,15 +80,15 @@ static inline void __show_frame_hdr(uint8_t *packet, size_t len, int linktype,
 		tprintf("%s %s %u",
 			packet_types[pkttype] ? : "?",
 			if_indextoname(s_ll->sll_ifindex, tmp) ? : "?",
-			v3 ? hdr.h3->tp_len : hdr.h2->tp_len);
+			tpacket_uhdr(hdr, tp_len, v3));
 		break;
 	default:
 		tprintf("%s %s %u %us.%uns %s\n",
 			packet_types[pkttype] ? : "?",
 			if_indextoname(s_ll->sll_ifindex, tmp) ? : "?",
-			v3 ? hdr.h3->tp_len : hdr.h2->tp_len,
-			v3 ? hdr.h3->tp_sec : hdr.h2->tp_sec,
-			v3 ? hdr.h3->tp_nsec : hdr.h2->tp_nsec,
+			tpacket_uhdr(hdr, tp_len, v3),
+			tpacket_uhdr(hdr, tp_sec, v3),
+			tpacket_uhdr(hdr, tp_nsec, v3),
 			v3 ? "" : __show_ts_source(hdr.h2->tp_status));
 		break;
 	}
