@@ -623,8 +623,7 @@ static void read_pcap(struct ctx *ctx)
 		}
 	}
 
-	out:
-
+out:
 	bug_on(gettimeofday(&end, NULL));
 	timersub(&end, &start, &diff);
 
@@ -953,8 +952,7 @@ static void recv_only_or_dump(struct ctx *ctx)
 
 	while (likely(sigint == 0)) {
 #ifdef HAVE_TPACKET3
-		while (user_may_pull_from_rx_block((pbd = (void *)
-				rx_ring.frames[it].iov_base))) {
+		while (user_may_pull_from_rx_block((pbd = rx_ring.frames[it].iov_base))) {
 			walk_t3_block(pbd, ctx, sock, &fd, &frame_count);
 
 			kernel_may_pull_from_rx_block(pbd);
@@ -1419,8 +1417,7 @@ int main(int argc, char **argv)
 		set_sched_status(SCHED_FIFO, sched_get_priority_max(SCHED_FIFO));
 	}
 
-	if (ctx.device_in && (device_mtu(ctx.device_in) ||
-	    !strncmp("any", ctx.device_in, strlen(ctx.device_in)))) {
+	if (device_mtu(ctx.device_in) || !strncmp("any", ctx.device_in, strlen(ctx.device_in))) {
 		if (!ctx.rfraw)
 			ctx.link_type = pcap_devtype_to_linktype(ctx.device_in);
 		if (!ctx.device_out) {
