@@ -181,7 +181,6 @@ static void __noreturn help(void)
 	     "  -e|--example                   Show built-in packet config example\n"
 	     "  -h|--help                      Guess what?!\n\n"
 	     "Examples:\n"
-	     "  See trafgen.txf for configuration file examples.\n"
 	     "  trafgen --dev eth0 --conf trafgen.cfg\n"
 	     "  trafgen -e | trafgen -i - -o eth0 --cpp -n 1\n"
 	     "  trafgen --dev eth0 --conf fuzzing.cfg --smoke-test 10.0.0.1\n"
@@ -193,6 +192,8 @@ static void __noreturn help(void)
 	     "  Run packet on  all CPUs:              { fill(0xff, 64) csum16(0, 64) }\n"
 	     "  Run packet only on CPU1:    cpu(1):   { rnd(64), 0b11001100, 0xaa }\n"
 	     "  Run packet only on CPU1-2:  cpu(1-2): { drnd(64),'a',csum16(1, 8),'b',42 }\n\n"
+	     "Generate config files from existing pcap using netsniff-ng:\n"
+	     "  netsniff-ng --in dump.pcap --out dump.cfg\n"
 	     "Note:\n"
 	     "  Smoke/fuzz test example: machine A, 10.0.0.2 (trafgen) is directly\n"
 	     "  connected to machine B (test kernel), 10.0.0.1. If ICMP reply fails\n"
@@ -1068,6 +1069,14 @@ int main(int argc, char **argv)
 		enter_rfmon_mac80211(ctx.device_trans, &ctx.device);
 		sleep(0);
 	}
+
+	/*
+	 * If number of packets is smaller than number of CPUs use only as
+	 * many CPUs as there are packets. Otherwise we end up sending more
+	 * packets than intended or none at all.
+	 */
+	if (ctx.num)
+		ctx.cpus = min_t(unsigned int, ctx.num, ctx.cpus);
 
 	irq = device_irq_number(ctx.device);
 	if (set_irq_aff)
