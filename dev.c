@@ -28,9 +28,10 @@ int device_ifindex_get(const char *ifname)
 
 	ret = ioctl(sock, SIOCGIFINDEX, &ifr);
 	if (ret)
-		return -1;
+		index = -1;
+	else
+		index = ifr.ifr_ifindex;
 
-	index = ifr.ifr_ifindex;
 	close(sock);
 
 	return index;
@@ -39,7 +40,8 @@ int device_ifindex_get(const char *ifname)
 int device_ifindex(const char *ifname)
 {
 	int index = device_ifindex_get(ifname);
-	if (unlikely(index <= 0))
+
+	if (unlikely(index < 0))
 		panic("Cannot get ifindex from device!\n");
 
 	return index;
