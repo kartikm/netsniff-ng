@@ -1,6 +1,6 @@
 # netsniff-ng build system
 # Copyright 2012 - 2013 Daniel Borkmann <borkmann@gnumaniacs.org>
-# Copyright 2013 - 2014 Tobias Klauser <tklauser@distanz.ch>
+# Copyright 2013 - 2015 Tobias Klauser <tklauser@distanz.ch>
 # Subject to the GNU GPL, version 2.
 
 -include Config
@@ -66,19 +66,12 @@ endif
 #   make CFLAGS="<flags>"
 CFLAGS_DEF  = -std=gnu99
 CFLAGS_DEF += -pipe
+CFLAGS_DEF += -O2
 
 ifeq ($(DEBUG), 1)
-  CFLAGS_DEF += -O2
   CFLAGS_DEF += -g
-else
- ifeq ($(DISTRO), 1)
-  CFLAGS_DEF += -O2
- else
-  CFLAGS_DEF += -march=native
-  CFLAGS_DEF += -mtune=native
-  CFLAGS_DEF += -O3
- endif
 endif
+
 ifeq ($(HARDENING), 1)
   CFLAGS_DEF += -fPIE -pie
   CFLAGS_DEF += -Wl,-z,relro,-z,now
@@ -127,14 +120,13 @@ VERSION_STRING = "$(VERSION_SHORT)$(CONFIG_RC)"
 VERSION_LONG   = "$(VERSION_SHORT)$(CONFIG_RC) ($(NAME))"
 
 export VERSION PATCHLEVEL SUBLEVEL EXTRAVERSION
-export CROSS_COMPILE
-export DEBUG DISTRO HARDENING
+export DEBUG HARDENING
 
 bold   = $(shell tput bold)
 normal = $(shell tput sgr0)
 
-ifeq ("$(origin CROSS_COMPILE)", "command line")
-  WHAT := Cross compiling
+ifneq ("$(CROSS_COMPILE)", "")
+  WHAT := Cross-compiling
 else
   WHAT := Building
 endif
@@ -184,5 +176,5 @@ $(foreach tool,$(TOOLS),$(eval $(call TOOL_templ,$(tool))))
 %:: ;
 
 $(TOOLS):
-	$(LD) $(LDFLAGS) -o $@/$@ $@/*.o $($@-libs)
-	$(STRIP) $@/$@
+	$(LDQ) $(LDFLAGS) -o $@/$@ $@/*.o $($@-libs)
+	$(STRIPQ) $@/$@

@@ -160,8 +160,13 @@ variable first, e.g.:
 
 And then, build the toolkit like this:
 
-  $ make CROSS_COMPILE=microblazeel-unknown-linux-gnu- \
-	 CROSS_LD_LIBRARY_PATH=<cc-lib-search-path>
+  $ CROSS_COMPILE=microblazeel-unknown-linux-gnu- \
+    SYSROOT=<sysroot-path> ./configure
+  $ make
+
+SYSROOT should be set to the path where your cross-compiled libraries are
+stored, i.e. the path you specify as prefix when configuring the library using
+`./configure --prefix=<prefix>'.
 
 Note that some adaptations might be necessary regarding the CFLAGS, since not
 all might be supported by a different architecture. Probably the most simple
@@ -180,13 +185,6 @@ For debugging the build system, actual commands are verbosly shown if every
 make target is executed with:
 
   $ make Q=
-
-Concerning packaging the toolkit for a Linux distribution, by default,
-netsniff-ng has some architecture-specific tuning options enabled that don't
-belong into a package binary of a distribution. Hence, you might want to build
-the toolkit with:
-
-  $ make DISTRO=1
 
 A hardening option is also available via HARDENING=1 if needed. You can then
 build and install the toolkit into prefixed path like:
