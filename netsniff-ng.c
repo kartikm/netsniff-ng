@@ -66,7 +66,7 @@ struct ctx {
 	uint32_t fanout_group, fanout_type;
 };
 
-static volatile sig_atomic_t sigint = 0;
+static volatile sig_atomic_t sigint = 0, sighup = 0;
 static volatile bool next_dump = false;
 
 static const char *short_options = "d:i:o:rf:MNJt:S:k:n:b:HQmcsqXlvhF:RGAP:Vu:g:T:DBUC:K:L:";
@@ -134,7 +134,10 @@ static void signal_handler(int number)
 	case SIGQUIT:
 	case SIGTERM:
 		sigint = 1;
+		break;
 	case SIGHUP:
+		sighup = 1;
+		break;
 	default:
 		break;
 	}
@@ -311,7 +314,8 @@ static void pcap_to_xmit(struct ctx *ctx)
 				       ctx->link_type, hdr, ctx->print_mode);
 
 			dissector_entry_point(out, hdr->tp_h.tp_snaplen,
-					      ctx->link_type, ctx->print_mode);
+					      ctx->link_type, ctx->print_mode,
+					      hdr->s_ll.sll_protocol);
 
 			kernel_may_pull_from_tx(&hdr->tp_h);
 
@@ -460,7 +464,8 @@ static void receive_to_xmit(struct ctx *ctx)
 				       ctx->link_type, hdr_in, ctx->print_mode);
 
 			dissector_entry_point(in, hdr_in->tp_h.tp_snaplen,
-					      ctx->link_type, ctx->print_mode);
+					      ctx->link_type, ctx->print_mode,
+					      hdr_in->s_ll.sll_protocol);
 
 			if (frame_count_max != 0) {
 				if (frame_count >= frame_count_max) {
@@ -643,7 +648,8 @@ static void read_pcap(struct ctx *ctx)
 			       ctx->print_mode);
 
 		dissector_entry_point(out, fm.tp_h.tp_snaplen,
-				      ctx->link_type, ctx->print_mode);
+				      ctx->link_type, ctx->print_mode,
+				      fm.s_ll.sll_protocol);
 
 		if (is_out_pcap) {
 			size_t pcap_len = pcap_get_length(&phdr, ctx->magic);
@@ -739,6 +745,18 @@ static int next_multi_pcap_file(struct ctx *ctx, int fd)
 	return fd;
 }
 
+static void reset_interval(struct ctx *ctx)
+{
+	if (ctx->dump_mode == DUMP_INTERVAL_TIME) {
+		interval = ctx->dump_interval;
+
+		set_itimer_interval_value(&itimer, interval, 0);
+		setitimer(ITIMER_REAL, &itimer, NULL);
+	} else {
+		interval = 0;
+	}
+}
+
 static int begin_multi_pcap_file(struct ctx *ctx)
 {
 	int fd, ret;
@@ -765,14 +783,7 @@ static int begin_multi_pcap_file(struct ctx *ctx)
 			panic("Error prepare writing pcap!\n");
 	}
 
-	if (ctx->dump_mode == DUMP_INTERVAL_TIME) {
-		interval = ctx->dump_interval;
-
-		set_itimer_interval_value(&itimer, interval, 0);
-		setitimer(ITIMER_REAL, &itimer, NULL);
-	} else {
-		interval = 0;
-	}
+	reset_interval(ctx);
 
 	return fd;
 }
@@ -852,6 +863,14 @@ static void update_pcap_next_dump(struct ctx *ctx, unsigned long snaplen, int *f
 		}
 	}
 
+	if (sighup) {
+		if (ctx->verbose)
+			printf("SIGHUP received, prematurely rotating pcap\n");
+		sighup = 0;
+		next_dump = true;
+		reset_interval(ctx);
+	}
+
 	if (next_dump) {
 		*fd = next_multi_pcap_file(ctx, *fd);
 		next_dump = false;
@@ -897,7 +916,7 @@ static void walk_t3_block(struct block_desc *pbd, struct ctx *ctx,
 				 hdr, ctx->print_mode, true);
 
 		dissector_entry_point(packet, hdr->tp_snaplen, ctx->link_type,
-				      ctx->print_mode);
+				      ctx->print_mode, sll->sll_protocol);
 next:
                 hdr = (void *) ((uint8_t *) hdr + hdr->tp_next_offset);
 		sll = (void *) ((uint8_t *) hdr + TPACKET_ALIGN(sizeof(*hdr)));
@@ -1031,7 +1050,8 @@ static void recv_only_or_dump(struct ctx *ctx)
 				       ctx->link_type, hdr, ctx->print_mode);
 
 			dissector_entry_point(packet, hdr->tp_h.tp_snaplen,
-					      ctx->link_type, ctx->print_mode);
+					      ctx->link_type, ctx->print_mode,
+					      hdr->s_ll.sll_protocol);
 
 			if (frame_count_max != 0) {
 				if (unlikely(frame_count >= frame_count_max)) {

@@ -14,6 +14,39 @@
 #include "proto.h"
 #include "protos.h"
 
+static const char *nlmsg_family2str(uint16_t family)
+{
+	switch (family) {
+	case NETLINK_ROUTE:		return "routing";
+	case NETLINK_UNUSED:		return "unused";
+	case NETLINK_USERSOCK:		return "user-mode socket";
+	case NETLINK_FIREWALL:		return "unused, formerly ip_queue";
+/* NETLINK_INET_DIAG was renamed to NETLINK_SOCK_DIAG in Linux kernel 3.10 */
+#if defined(NETLINK_SOCK_DIAG)
+	case NETLINK_SOCK_DIAG:		return "socket monitoring";
+#elif defined(NETLINK_INET_DIAG)
+	case NETLINK_INET_DIAG:		return "INET socket monitoring";
+#endif
+	case NETLINK_NFLOG:		return "netfilter ULOG";
+	case NETLINK_XFRM:		return "IPsec";
+	case NETLINK_SELINUX:		return "SELinux event notification";
+	case NETLINK_ISCSI:		return "Open-iSCSI";
+	case NETLINK_AUDIT:		return "auditing";
+	case NETLINK_FIB_LOOKUP:	return "FIB lookup";
+	case NETLINK_CONNECTOR:		return "Kernel connector";
+	case NETLINK_NETFILTER:		return "Netfilter";
+	case NETLINK_IP6_FW:		return "unused, formerly ip6_queue";
+	case NETLINK_DNRTMSG:		return "DECnet routing";
+	case NETLINK_KOBJECT_UEVENT:	return "Kernel messages";
+	case NETLINK_GENERIC:		return "Generic";
+	case NETLINK_SCSITRANSPORT:	return "SCSI transports";
+	case NETLINK_ECRYPTFS:		return "ecryptfs";
+	case NETLINK_RDMA:		return "RDMA";
+	case NETLINK_CRYPTO:		return "Crypto layer";
+	default:			return "Unknown";
+	}
+}
+
 static void nlmsg(struct pkt_buff *pkt)
 {
 	struct nlmsghdr *hdr = (struct nlmsghdr *) pkt_pull(pkt, sizeof(*hdr));
@@ -44,6 +77,8 @@ static void nlmsg(struct pkt_buff *pkt)
 		snprintf(procname, sizeof(procname), "kernel");
 
 	tprintf(" [ NLMSG ");
+	tprintf("Family %d (%s%s%s), ", ntohs(pkt->proto), colorize_start(bold),
+		nlmsg_family2str(ntohs(pkt->proto)), colorize_end());
 	tprintf("Len %u, ", hdr->nlmsg_len);
 	tprintf("Type 0x%.4x (%s%s%s), ", hdr->nlmsg_type,
 		colorize_start(bold),
