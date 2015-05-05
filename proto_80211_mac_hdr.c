@@ -3083,7 +3083,8 @@ static const char *mgt_sub(u8 subtype, struct pkt_buff *pkt,
 		*get_content = mgmt_probe_request_dissect;
 		return "Probe Request";
 	case 0x5:
-		*get_content = mgmt_unimplemented;
+		/* Probe Response is very similar to Beacon except some IEs */
+		*get_content = mgmt_beacon_dissect;
 		return "Probe Response";
 	case 0x8:
 		*get_content = mgmt_beacon_dissect;
@@ -3256,7 +3257,7 @@ static void ieee80211(struct pkt_buff *pkt)
 
 	tprintf("\n");
 
-//	pkt_set_proto(pkt, &ieee802_lay2, ntohs(eth->h_proto));
+//	pkt_set_dissector(pkt, &ieee802_lay2, ntohs(eth->h_proto));
 }
 
 static void ieee80211_less(struct pkt_buff *pkt __maybe_unused)
