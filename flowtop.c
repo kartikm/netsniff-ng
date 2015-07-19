@@ -23,6 +23,8 @@
 #include <urcu.h>
 #include <libgen.h>
 #include <inttypes.h>
+#include <poll.h>
+#include <fcntl.h>
 
 #include "die.h"
 #include "xmalloc.h"
@@ -36,6 +38,7 @@
 #include "locking.h"
 #include "pkt_buff.h"
 #include "screen.h"
+#include "proc.h"
 
 struct flow_entry {
 	uint32_t flow_id, use, status;
@@ -53,6 +56,8 @@ struct flow_entry {
 	struct flow_entry *next;
 	int inode;
 	unsigned int procnum;
+	bool is_visible;
+	struct nf_conntrack *ct;
 };
 
 struct flow_list {
@@ -81,6 +86,7 @@ static volatile sig_atomic_t sigint = 0;
 static int what = INCLUDE_IPV4 | INCLUDE_IPV6 | INCLUDE_TCP, show_src = 0;
 static struct flow_list flow_list;
 static struct condlock collector_ready;
+static int nfct_acct_val = -1;
 
 static const char *short_options = "vhTUsDIS46u";
 static const struct option long_options[] = {
@@ -146,17 +152,17 @@ static const char *const tcp_state2str[TCP_CONNTRACK_MAX] = {
 	[TCP_CONNTRACK_SYN_SENT2]	= "SYN_SENT2",
 };
 
-static const uint8_t tcp_states[] = {
-	TCP_CONNTRACK_SYN_SENT,
-	TCP_CONNTRACK_SYN_RECV,
-	TCP_CONNTRACK_ESTABLISHED,
-	TCP_CONNTRACK_FIN_WAIT,
-	TCP_CONNTRACK_CLOSE_WAIT,
-	TCP_CONNTRACK_LAST_ACK,
-	TCP_CONNTRACK_TIME_WAIT,
-	TCP_CONNTRACK_CLOSE,
-	TCP_CONNTRACK_SYN_SENT2,
-	TCP_CONNTRACK_NONE,
+static const bool tcp_states_show[TCP_CONNTRACK_MAX] = {
+	[TCP_CONNTRACK_SYN_SENT] = true,
+	[TCP_CONNTRACK_SYN_RECV] = true,
+	[TCP_CONNTRACK_ESTABLISHED] = true,
+	[TCP_CONNTRACK_FIN_WAIT] = true,
+	[TCP_CONNTRACK_CLOSE_WAIT] = true,
+	[TCP_CONNTRACK_LAST_ACK] = true,
+	[TCP_CONNTRACK_TIME_WAIT] = true,
+	[TCP_CONNTRACK_CLOSE] = true,
+	[TCP_CONNTRACK_SYN_SENT2] = true,
+	[TCP_CONNTRACK_NONE] = true,
 };
 
 static const char *const dccp_state2str[DCCP_CONNTRACK_MAX] = {
@@ -172,17 +178,17 @@ static const char *const dccp_state2str[DCCP_CONNTRACK_MAX] = {
 	[DCCP_CONNTRACK_INVALID]	= "INVALID",
 };
 
-static const uint8_t dccp_states[] = {
-	DCCP_CONNTRACK_NONE,
-	DCCP_CONNTRACK_REQUEST,
-	DCCP_CONNTRACK_RESPOND,
-	DCCP_CONNTRACK_PARTOPEN,
-	DCCP_CONNTRACK_OPEN,
-	DCCP_CONNTRACK_CLOSEREQ,
-	DCCP_CONNTRACK_CLOSING,
-	DCCP_CONNTRACK_TIMEWAIT,
-	DCCP_CONNTRACK_IGNORE,
-	DCCP_CONNTRACK_INVALID,
+static const uint8_t dccp_states_show[DCCP_CONNTRACK_MAX] = {
+	[DCCP_CONNTRACK_NONE] = true,
+	[DCCP_CONNTRACK_REQUEST] = true,
+	[DCCP_CONNTRACK_RESPOND] = true,
+	[DCCP_CONNTRACK_PARTOPEN] = true,
+	[DCCP_CONNTRACK_OPEN] = true,
+	[DCCP_CONNTRACK_CLOSEREQ] = true,
+	[DCCP_CONNTRACK_CLOSING] = true,
+	[DCCP_CONNTRACK_TIMEWAIT] = true,
+	[DCCP_CONNTRACK_IGNORE] = true,
+	[DCCP_CONNTRACK_INVALID] = true,
 };
 
 static const char *const sctp_state2str[SCTP_CONNTRACK_MAX] = {
@@ -196,15 +202,15 @@ static const char *const sctp_state2str[SCTP_CONNTRACK_MAX] = {
 	[SCTP_CONNTRACK_SHUTDOWN_ACK_SENT] = "SHUTDOWN_ACK_SENT",
 };
 
-static const uint8_t sctp_states[] = {
-	SCTP_CONNTRACK_NONE,
-	SCTP_CONNTRACK_CLOSED,
-	SCTP_CONNTRACK_COOKIE_WAIT,
-	SCTP_CONNTRACK_COOKIE_ECHOED,
-	SCTP_CONNTRACK_ESTABLISHED,
-	SCTP_CONNTRACK_SHUTDOWN_SENT,
-	SCTP_CONNTRACK_SHUTDOWN_RECD,
-	SCTP_CONNTRACK_SHUTDOWN_ACK_SENT,
+static const uint8_t sctp_states_show[SCTP_CONNTRACK_MAX] = {
+	[SCTP_CONNTRACK_NONE] = true,
+	[SCTP_CONNTRACK_CLOSED] = true,
+	[SCTP_CONNTRACK_COOKIE_WAIT] = true,
+	[SCTP_CONNTRACK_COOKIE_ECHOED] = true,
+	[SCTP_CONNTRACK_ESTABLISHED] = true,
+	[SCTP_CONNTRACK_SHUTDOWN_SENT] = true,
+	[SCTP_CONNTRACK_SHUTDOWN_RECD] = true,
+	[SCTP_CONNTRACK_SHUTDOWN_ACK_SENT] = true,
 };
 
 static const struct nfct_filter_ipv4 filter_ipv4 = {
@@ -216,6 +222,60 @@ static const struct nfct_filter_ipv6 filter_ipv6 = {
 	.addr = { 0x0, 0x0, 0x0, 0x1 },
 	.mask = { 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff },
 };
+
+#define SYS_PATH "/proc/sys/"
+
+static int sysctl_set_int(char *file, int value)
+{
+	char path[PATH_MAX];
+	char str[64];
+	ssize_t ret;
+	int fd;
+
+	strncpy(path, SYS_PATH, PATH_MAX);
+	strncat(path, file, PATH_MAX - sizeof(SYS_PATH) - 1);
+
+	fd = open(path, O_WRONLY);
+	if (unlikely(fd < 0))
+		return -1;
+
+	ret = snprintf(str, 63, "%d", value);
+	if (ret < 0) {
+		close(fd);
+		return -1;
+	}
+
+	ret = write(fd, str, strlen(str));
+
+	close(fd);
+	return ret <= 0 ? -1 : 0;
+}
+
+static int sysctl_get_int(char *file, int *value)
+{
+	char path[PATH_MAX];
+	char str[64];
+	ssize_t ret;
+	int fd;
+
+	strncpy(path, SYS_PATH, PATH_MAX);
+	strncat(path, file, PATH_MAX - sizeof(SYS_PATH) - 1);
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return -1;
+
+	ret = read(fd, str, sizeof(str));
+	if (ret > 0) {
+		*value = atoi(str);
+		ret = 0;
+	} else {
+		ret = -1;
+	}
+
+	close(fd);
+	return ret;
+}
 
 static void signal_handler(int number)
 {
@@ -279,6 +339,9 @@ static inline struct flow_entry *flow_entry_xalloc(void)
 
 static inline void flow_entry_xfree(struct flow_entry *n)
 {
+	if (n->ct)
+		nfct_destroy(n->ct);
+
 	xfree(n);
 }
 
@@ -291,6 +354,8 @@ static inline void flow_list_init(struct flow_list *fl)
 static void flow_list_new_entry(struct flow_list *fl, struct nf_conntrack *ct)
 {
 	struct flow_entry *n = flow_entry_xalloc();
+
+	n->ct = nfct_clone(ct);
 
 	flow_entry_from_ct(n, ct);
 	flow_entry_get_extended(n);
@@ -335,22 +400,15 @@ static struct flow_entry *flow_list_find_prev_id(struct flow_list *fl,
 static void flow_list_update_entry(struct flow_list *fl,
 				   struct nf_conntrack *ct)
 {
-	int do_ext = 0;
 	struct flow_entry *n;
 
 	n = flow_list_find_id(fl, nfct_get_attr_u32(ct, ATTR_ID));
 	if (n == NULL) {
-		n = flow_entry_xalloc();
-		do_ext = 1;
+		flow_list_new_entry(fl, ct);
+		return;
 	}
 
 	flow_entry_from_ct(n, ct);
-	if (do_ext) {
-		flow_entry_get_extended(n);
-
-		rcu_assign_pointer(n->next, fl->head);
-		rcu_assign_pointer(fl->head, n);
-	}
 }
 
 static void flow_list_destroy_entry(struct flow_list *fl,
@@ -368,8 +426,10 @@ static void flow_list_destroy_entry(struct flow_list *fl,
 
 			flow_entry_xfree(n1);
 		} else {
+			struct flow_entry *next = fl->head->next;
+
 			flow_entry_xfree(fl->head);
-			fl->head = NULL;
+			fl->head = next;
 		}
 	}
 }
@@ -415,14 +475,9 @@ static int walk_process(unsigned int pid, struct flow_entry *n)
 			continue;
 
 		if (S_ISSOCK(statbuf.st_mode) && (ino_t) n->inode == statbuf.st_ino) {
-			memset(n->cmdline, 0, sizeof(n->cmdline));
-
-			snprintf(path, sizeof(path), "/proc/%u/exe", pid);
-
-			ret = readlink(path, n->cmdline,
-				       sizeof(n->cmdline) - 1);
+			ret = proc_get_cmdline(pid, n->cmdline, sizeof(n->cmdline));
 			if (ret < 0)
-				panic("readlink error: %s\n", strerror(errno));
+				panic("Failed to get process cmdline: %s\n", strerror(errno));
 
 			n->procnum = pid;
 			closedir(dir);
@@ -442,7 +497,7 @@ static void walk_processes(struct flow_entry *n)
 
 	/* n->inode must be set */
 	if (n->inode <= 0) {
-		memset(n->cmdline, 0, sizeof(n->cmdline));
+		n->cmdline[0] = '\0';
 		return;
 	}
 
@@ -745,6 +800,20 @@ static uint16_t presenter_get_port(uint16_t src, uint16_t dst, int tcp)
 	}
 }
 
+static char *bandw2str(double bytes, char *buf, size_t len)
+{
+	if (bytes > 1000000000.)
+		snprintf(buf, len, "%.1fG", bytes / 1000000000.);
+	if (bytes > 1000000.)
+		snprintf(buf, len, "%.1fM", bytes / 1000000.);
+	else if (bytes > 1000.)
+		snprintf(buf, len, "%.1fK", bytes / 1000.);
+	else
+		snprintf(buf, len, "%g", bytes);
+
+	return buf;
+}
+
 static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 				     unsigned int *line)
 {
@@ -809,9 +878,13 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 	printw(" ->");
 
 	/* Number packets, bytes */
-	if (n->counter_pkts > 0 && n->counter_bytes > 0)
-		printw(" (%"PRIu64" pkts, %"PRIu64" bytes) ->",
-		       n->counter_pkts, n->counter_bytes);
+	if (n->counter_pkts > 0 && n->counter_bytes > 0) {
+		char bytes_str[64];
+
+		printw(" (%"PRIu64" pkts, %s bytes) ->", n->counter_pkts,
+		       bandw2str(n->counter_bytes, bytes_str,
+				 sizeof(bytes_str) - 1));
+	}
 
 	/* Show source information: reverse DNS, port, country, city */
 	if (show_src) {
@@ -858,21 +931,21 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 	}
 }
 
-static inline int presenter_flow_wrong_state(struct flow_entry *n, int state)
+static inline int presenter_flow_wrong_state(struct flow_entry *n)
 {
 	int ret = 1;
 
 	switch (n->l4_proto) {
 	case IPPROTO_TCP:
-		if (n->tcp_state == state)
+		if (tcp_states_show[n->tcp_state])
 			ret = 0;
 		break;
 	case IPPROTO_SCTP:
-		if (n->sctp_state == state)
+		if (sctp_states_show[n->sctp_state])
 			ret = 0;
 		break;
 	case IPPROTO_DCCP:
-		if (n->dccp_state == state)
+		if (dccp_states_show[n->dccp_state])
 			ret = 0;
 		break;
 	case IPPROTO_UDP:
@@ -890,27 +963,10 @@ static void presenter_screen_update(WINDOW *screen, struct flow_list *fl,
 				    int skip_lines)
 {
 	int maxy;
-	size_t i, j;
+	int skip_left = skip_lines;
+	unsigned int flows = 0;
 	unsigned int line = 3;
 	struct flow_entry *n;
-	uint8_t protocols[] = {
-		IPPROTO_TCP,
-		IPPROTO_DCCP,
-		IPPROTO_SCTP,
-		IPPROTO_UDP,
-		IPPROTO_UDPLITE,
-		IPPROTO_ICMP,
-		IPPROTO_ICMPV6,
-	};
-	size_t protocol_state_size[] = {
-		[IPPROTO_TCP] = array_size(tcp_states),
-		[IPPROTO_DCCP] = array_size(dccp_states),
-		[IPPROTO_SCTP] = array_size(sctp_states),
-		[IPPROTO_UDP] = 1,
-		[IPPROTO_UDPLITE] = 1,
-		[IPPROTO_ICMP] = 1,
-		[IPPROTO_ICMPV6] = 1,
-	};
 
 	curs_set(0);
 
@@ -926,47 +982,50 @@ static void presenter_screen_update(WINDOW *screen, struct flow_list *fl,
 	wclear(screen);
 	clear();
 
-	mvwprintw(screen, 1, 2, "Kernel netfilter flows for %s%s%s%s%s%s"
-		  "[+%d]", what & INCLUDE_TCP ? "TCP, " : "" ,
+	rcu_read_lock();
+
+	n = rcu_dereference(fl->head);
+	if (!n)
+		mvwprintw(screen, line, 2, "(No active sessions! "
+			  "Is netfilter running?)");
+
+	for (; n; n = rcu_dereference(n->next)) {
+		if (presenter_get_port(n->port_src, n->port_dst, 0) == 53)
+			goto skip;
+
+		if (presenter_flow_wrong_state(n))
+			goto skip;
+
+		/* count only flows which might be showed */
+		flows++;
+
+		if (maxy <= 0)
+			goto skip;
+
+		if (skip_left > 0) {
+			skip_left--;
+			goto skip;
+		}
+
+		presenter_screen_do_line(screen, n, &line);
+
+		line++;
+		maxy -= (2 + 1 * show_src);
+		n->is_visible = true;
+		continue;
+skip:
+		n->is_visible = false;
+		continue;
+	}
+
+	mvwprintw(screen, 1, 2, "Kernel netfilter flows(%u) for %s%s%s%s%s%s"
+		  "[+%d]", flows, what & INCLUDE_TCP ? "TCP, " : "" ,
 		  what & INCLUDE_UDP ? "UDP, " : "",
 		  what & INCLUDE_SCTP ? "SCTP, " : "",
 		  what & INCLUDE_DCCP ? "DCCP, " : "",
 		  what & INCLUDE_ICMP && what & INCLUDE_IPV4 ? "ICMP, " : "",
 		  what & INCLUDE_ICMP && what & INCLUDE_IPV6 ? "ICMP6, " : "",
 		  skip_lines);
-
-	rcu_read_lock();
-
-	if (rcu_dereference(fl->head) == NULL)
-		mvwprintw(screen, line, 2, "(No active sessions! "
-			  "Is netfilter running?)");
-
-	for (i = 0; i < array_size(protocols); i++) {
-		for (j = 0; j < protocol_state_size[protocols[i]]; j++) {
-			n = rcu_dereference(fl->head);
-			while (n && maxy > 0) {
-				if (n->l4_proto != protocols[i] ||
-				    presenter_flow_wrong_state(n, j) ||
-				    presenter_get_port(n->port_src,
-						       n->port_dst, 0) == 53) {
-					/* skip entry */
-					n = rcu_dereference(n->next);
-					continue;
-				}
-				if (skip_lines > 0) {
-					n = rcu_dereference(n->next);
-					skip_lines--;
-					continue;
-				}
-
-				presenter_screen_do_line(screen, n, &line);
-
-				line++;
-				maxy -= (2 + 1 * show_src);
-				n = rcu_dereference(n->next);
-			}
-		}
-	}
 
 	rcu_read_unlock();
 
@@ -1011,7 +1070,7 @@ static void presenter(void)
 		}
 
 		presenter_screen_update(screen, &flow_list, skip_lines);
-		usleep(100000);
+		usleep(200000);
 	}
 	rcu_unregister_thread();
 
@@ -1053,26 +1112,92 @@ static inline void collector_flush(struct nfct_handle *handle, uint8_t family)
 	nfct_query(handle, NFCT_Q_FLUSH, &family);
 }
 
+static void restore_sysctl(void *value)
+{
+	int int_val = *(int *)value;
+
+	if (int_val == 0)
+		sysctl_set_int("net/netfilter/nf_conntrack_acct", int_val);
+}
+
+static void on_panic_handler(void *arg)
+{
+	restore_sysctl(arg);
+	screen_end();
+}
+
+static void conntrack_acct_enable(void)
+{
+	/* We can still work w/o traffic accounting so just warn about error */
+	if (sysctl_get_int("net/netfilter/nf_conntrack_acct", &nfct_acct_val)) {
+		fprintf(stderr, "Can't read net/netfilter/nf_conntrack_acct: %s\n",
+			strerror(errno));
+	}
+
+	if (nfct_acct_val == 1)
+		return;
+
+	if (sysctl_set_int("net/netfilter/nf_conntrack_acct", 1)) {
+		fprintf(stderr, "Can't write net/netfilter/nf_conntrack_acct: %s\n",
+			strerror(errno));
+	}
+}
+
+static int dump_cb(enum nf_conntrack_msg_type type,
+		   struct nf_conntrack *ct, void *data __maybe_unused)
+{
+	struct flow_entry *n;
+
+	if (type != NFCT_T_UPDATE)
+		return NFCT_CB_CONTINUE;
+
+	if (sigint)
+		return NFCT_CB_STOP;
+
+	n = flow_list_find_id(&flow_list, nfct_get_attr_u32(ct, ATTR_ID));
+	if (!n)
+		return NFCT_CB_CONTINUE;
+
+	flow_entry_from_ct(n, ct);
+
+	return NFCT_CB_CONTINUE;
+}
+
+static void collector_refresh_flows(struct nfct_handle *handle)
+{
+	struct flow_entry *n;
+
+	n = rcu_dereference(flow_list.head);
+	for (; n; n = rcu_dereference(n->next)) {
+		if (!n->is_visible)
+			continue;
+
+		nfct_query(handle, NFCT_Q_GET, n->ct);
+	}
+}
+
 static void *collector(void *null __maybe_unused)
 {
-	int ret;
-	struct nfct_handle *handle;
+	struct nfct_handle *ct_event;
+	struct nfct_handle *ct_dump;
 	struct nfct_filter *filter;
+	struct pollfd poll_fd[1];
+	int ret;
 
-	handle = nfct_open(CONNTRACK, NF_NETLINK_CONNTRACK_NEW |
+	ct_event = nfct_open(CONNTRACK, NF_NETLINK_CONNTRACK_NEW |
 				      NF_NETLINK_CONNTRACK_UPDATE |
 				      NF_NETLINK_CONNTRACK_DESTROY);
-	if (!handle)
+	if (!ct_event)
 		panic("Cannot create a nfct handle: %s\n", strerror(errno));
 
-	collector_flush(handle, AF_INET);
-	collector_flush(handle, AF_INET6);
+	collector_flush(ct_event, AF_INET);
+	collector_flush(ct_event, AF_INET6);
 
 	filter = nfct_filter_create();
 	if (!filter)
 		panic("Cannot create a nfct filter: %s\n", strerror(errno));
 
-	ret = nfct_filter_attach(nfct_fd(handle), filter);
+	ret = nfct_filter_attach(nfct_fd(ct_event), filter);
 	if (ret < 0)
 		panic("Cannot attach filter to handle: %s\n", strerror(errno));
 
@@ -1099,25 +1224,62 @@ static void *collector(void *null __maybe_unused)
 		nfct_filter_add_attr(filter, NFCT_FILTER_SRC_IPV6, &filter_ipv6);
 	}
 
-	ret = nfct_filter_attach(nfct_fd(handle), filter);
+	ret = nfct_filter_attach(nfct_fd(ct_event), filter);
 	if (ret < 0)
 		panic("Cannot attach filter to handle: %s\n", strerror(errno));
 
-	nfct_callback_register(handle, NFCT_T_ALL, collector_cb, NULL);
 	nfct_filter_destroy(filter);
+
+	nfct_callback_register(ct_event, NFCT_T_ALL, collector_cb, NULL);
 	flow_list_init(&flow_list);
+
+	ct_dump = nfct_open(CONNTRACK, NF_NETLINK_CONNTRACK_UPDATE);
+	if (!ct_dump)
+		panic("Cannot create a nfct handle: %s\n", strerror(errno));
+
+	nfct_callback_register(ct_dump, NFCT_T_ALL, dump_cb, NULL);
+
+	poll_fd[0].fd = nfct_fd(ct_event);
+	poll_fd[0].events = POLLIN;
+
+	if (fcntl(nfct_fd(ct_event), F_SETFL, O_NONBLOCK) == -1)
+		panic("Cannot set non-blocking socket: fcntl(): %s\n",
+		      strerror(errno));
+
+	if (fcntl(nfct_fd(ct_dump), F_SETFL, O_NONBLOCK) == -1)
+		panic("Cannot set non-blocking socket: fcntl(): %s\n",
+		      strerror(errno));
 
 	condlock_signal(&collector_ready);
 
 	rcu_register_thread();
 
-	while (!sigint && ret >= 0)
-		ret = nfct_catch(handle);
+	while (!sigint && ret >= 0) {
+		int status;
+
+		usleep(300000);
+
+		collector_refresh_flows(ct_dump);
+
+		status = poll(poll_fd, 1, 0);
+		if (status < 0) {
+			if (errno == EAGAIN || errno == EINTR)
+				continue;
+
+			panic("Error while polling: %s\n", strerror(errno));
+		} else if (status == 0) {
+			continue;
+		}
+
+		if (poll_fd[0].revents & POLLIN)
+			nfct_catch(ct_event);
+	}
 
 	rcu_unregister_thread();
 
 	flow_list_destroy(&flow_list);
-	nfct_close(handle);
+	nfct_close(ct_event);
+	nfct_close(ct_dump);
 
 	pthread_exit(NULL);
 }
@@ -1182,6 +1344,10 @@ int main(int argc, char **argv)
 	register_signal(SIGTERM, signal_handler);
 	register_signal(SIGHUP, signal_handler);
 
+	panic_handler_add(on_panic_handler, &nfct_acct_val);
+
+	conntrack_acct_enable();
+
 	init_geoip(1);
 
 	condlock_init(&collector_ready);
@@ -1195,6 +1361,8 @@ int main(int argc, char **argv)
 	condlock_destroy(&collector_ready);
 
 	destroy_geoip();
+
+	restore_sysctl(&nfct_acct_val);
 
 	return 0;
 }
