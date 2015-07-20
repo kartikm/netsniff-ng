@@ -39,6 +39,7 @@
 #include "pkt_buff.h"
 #include "screen.h"
 #include "proc.h"
+#include "sysctl.h"
 
 struct flow_entry {
 	uint32_t flow_id, use, status;
@@ -85,7 +86,6 @@ struct flow_list {
 static volatile sig_atomic_t sigint = 0;
 static int what = INCLUDE_IPV4 | INCLUDE_IPV6 | INCLUDE_TCP, show_src = 0;
 static struct flow_list flow_list;
-static struct condlock collector_ready;
 static int nfct_acct_val = -1;
 
 static const char *short_options = "vhTUsDIS46u";
@@ -222,60 +222,6 @@ static const struct nfct_filter_ipv6 filter_ipv6 = {
 	.addr = { 0x0, 0x0, 0x0, 0x1 },
 	.mask = { 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff },
 };
-
-#define SYS_PATH "/proc/sys/"
-
-static int sysctl_set_int(char *file, int value)
-{
-	char path[PATH_MAX];
-	char str[64];
-	ssize_t ret;
-	int fd;
-
-	strncpy(path, SYS_PATH, PATH_MAX);
-	strncat(path, file, PATH_MAX - sizeof(SYS_PATH) - 1);
-
-	fd = open(path, O_WRONLY);
-	if (unlikely(fd < 0))
-		return -1;
-
-	ret = snprintf(str, 63, "%d", value);
-	if (ret < 0) {
-		close(fd);
-		return -1;
-	}
-
-	ret = write(fd, str, strlen(str));
-
-	close(fd);
-	return ret <= 0 ? -1 : 0;
-}
-
-static int sysctl_get_int(char *file, int *value)
-{
-	char path[PATH_MAX];
-	char str[64];
-	ssize_t ret;
-	int fd;
-
-	strncpy(path, SYS_PATH, PATH_MAX);
-	strncat(path, file, PATH_MAX - sizeof(SYS_PATH) - 1);
-
-	fd = open(path, O_RDONLY);
-	if (fd < 0)
-		return -1;
-
-	ret = read(fd, str, sizeof(str));
-	if (ret > 0) {
-		*value = atoi(str);
-		ret = 0;
-	} else {
-		ret = -1;
-	}
-
-	close(fd);
-	return ret;
-}
 
 static void signal_handler(int number)
 {
@@ -1038,8 +984,6 @@ static void presenter(void)
 	int skip_lines = 0;
 	WINDOW *screen;
 
-	condlock_wait(&collector_ready);
-
 	lookup_init_ports(PORTS_TCP);
 	lookup_init_ports(PORTS_UDP);
 	screen = screen_init(false);
@@ -1250,8 +1194,6 @@ static void *collector(void *null __maybe_unused)
 		panic("Cannot set non-blocking socket: fcntl(): %s\n",
 		      strerror(errno));
 
-	condlock_signal(&collector_ready);
-
 	rcu_register_thread();
 
 	while (!sigint && ret >= 0) {
@@ -1350,15 +1292,11 @@ int main(int argc, char **argv)
 
 	init_geoip(1);
 
-	condlock_init(&collector_ready);
-
 	ret = pthread_create(&tid, NULL, collector, NULL);
 	if (ret < 0)
 		panic("Cannot create phthread!\n");
 
 	presenter();
-
-	condlock_destroy(&collector_ready);
 
 	destroy_geoip();
 
