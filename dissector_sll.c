@@ -38,17 +38,14 @@ static void sll_print_full(struct pkt_buff *pkt)
 	struct sockaddr_ll *sll = pkt->sll;
 	char addr_str[40] = {};
 
-	if (!pkt || !sll)
-		return;
-
 	tprintf(" [ Linux \"cooked\"");
 	tprintf(" Pkt Type %d (%s)", sll->sll_pkttype,
-			pkt_type2str(sll->sll_pkttype));
+		pkt_type2str(sll->sll_pkttype));
 	tprintf(", If Type %d (%s)", sll->sll_hatype,
-			device_type2str(sll->sll_hatype));
+		device_type2str(sll->sll_hatype));
 	tprintf(", Addr Len %d", sll->sll_halen);
 	tprintf(", Src (%s)", device_addr2str(sll->sll_addr, sll->sll_halen,
-			sll->sll_hatype, addr_str, sizeof(addr_str)));
+		sll->sll_hatype, addr_str, sizeof(addr_str)));
 	tprintf(", Proto 0x%x", ntohs(sll->sll_protocol));
 	tprintf(" ]\n");
 
@@ -62,7 +59,7 @@ static void sll_print_full(struct pkt_buff *pkt)
 		pkt->dissector = &nlmsg_ops;
 		break;
 	default:
-		tprintf(" [ Uknown protocol ]\n");
+		tprintf(" [ Unknown protocol ]\n");
 	}
 }
 
@@ -71,16 +68,13 @@ static void sll_print_less(struct pkt_buff *pkt)
 	struct sockaddr_ll *sll = pkt->sll;
 	char addr_str[40] = {};
 
-	if (!pkt || !sll)
-		return;
-
 	tprintf(" Pkt Type %d (%s)", sll->sll_pkttype,
-			pkt_type2str(sll->sll_pkttype));
+		pkt_type2str(sll->sll_pkttype));
 	tprintf(", If Type %d (%s)", sll->sll_hatype,
-			device_type2str(sll->sll_hatype));
+		device_type2str(sll->sll_hatype));
 	tprintf(", Addr Len %d", sll->sll_halen);
 	tprintf(", Src (%s)", device_addr2str(sll->sll_addr, sll->sll_halen,
-			sll->sll_hatype, addr_str, sizeof(addr_str)));
+		sll->sll_hatype, addr_str, sizeof(addr_str)));
 	tprintf(", Proto 0x%x", ntohs(sll->sll_protocol));
 }
 
