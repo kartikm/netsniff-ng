@@ -245,7 +245,7 @@ static int stats_proc_net_dev(const char *ifname, struct ifstat *stats)
 		if (strstr(buff, ifname_colon) == NULL)
 			continue;
 
-		if (sscanf(buff, "%*[a-z0-9 .-]:%llu%llu%llu%llu%llu%llu"
+		if (sscanf(buff, "%*[a-z0-9_ .-]:%llu%llu%llu%llu%llu%llu"
 			   "%llu%*u%llu%llu%llu%llu%llu%llu%llu",
 			   &stats->rx_bytes, &stats->rx_packets,
 			   &stats->rx_errors, &stats->rx_drops,
@@ -1127,6 +1127,12 @@ static void screen_update(WINDOW *screen, const char *ifname, const struct ifsta
 	refresh();
 }
 
+static void on_panic_handler(void *arg)
+{
+	screen_end();
+	fprintf(stderr, "Please check <stderr> for error message\n");
+}
+
 static int screen_main(const char *ifname, uint64_t ms_interval,
 		       unsigned int top_cpus, bool suppress_warnings,
 		       bool omit_header __maybe_unused)
@@ -1136,6 +1142,8 @@ static int screen_main(const char *ifname, uint64_t ms_interval,
 	bool need_info = false;
 
 	stats_screen = screen_init(true);
+
+	panic_handler_add(on_panic_handler, NULL);
 
 	if (((rate > SPEED_1000 && ms_interval <= 1000) ||
 	     (rate = SPEED_1000 && ms_interval <  1000)) &&

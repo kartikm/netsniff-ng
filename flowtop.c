@@ -291,16 +291,16 @@ static struct flow_entry *flow_list_find_id(struct flow_list *fl,
 static struct flow_entry *flow_list_find_prev_id(struct flow_list *fl,
 						 uint32_t id)
 {
-	struct flow_entry *n = rcu_dereference(fl->head), *tmp;
+	struct flow_entry *prev = rcu_dereference(fl->head), *next;
 
-	if (n->flow_id == id)
+	if (prev->flow_id == id)
 		return NULL;
 
-	while ((tmp = rcu_dereference(n->next)) != NULL) {
-		if (tmp->flow_id == id)
-			return n;
+	while ((next = rcu_dereference(prev->next)) != NULL) {
+		if (next->flow_id == id)
+			return prev;
 
-		n = tmp;
+		prev = next;
 	}
 
 	return NULL;
@@ -431,7 +431,7 @@ static void walk_processes(struct flow_entry *n)
 	closedir(dir);
 }
 
-static int get_port_inode(uint16_t port, int proto, int is_ip6)
+static int get_port_inode(uint16_t port, int proto, bool is_ip6)
 {
 	int ret = -ENOENT;
 	char path[128], buff[1024];
@@ -517,7 +517,7 @@ enum flow_entry_direction {
 	flow_entry_dst,
 };
 
-static inline int flow_entry_get_extended_is_dns(struct flow_entry *n)
+static inline bool flow_entry_get_extended_is_dns(struct flow_entry *n)
 {
 	/* We don't want to analyze / display DNS itself, since we
 	 * use it to resolve reverse dns.
@@ -571,7 +571,7 @@ flow_entry_geo_city_lookup_generic(struct flow_entry *n,
 		break;
 	}
 
-	bug_on(sizeof(n->city_src) != sizeof(n->city_dst));
+	build_bug_on(sizeof(n->city_src) != sizeof(n->city_dst));
 
 	if (city) {
 		memcpy(SELFLD(dir, city_src, city_dst), city,
@@ -605,7 +605,7 @@ flow_entry_geo_country_lookup_generic(struct flow_entry *n,
 		break;
 	}
 
-	bug_on(sizeof(n->country_src) != sizeof(n->country_dst));
+	build_bug_on(sizeof(n->country_src) != sizeof(n->country_dst));
 
 	if (country) {
 		memcpy(SELFLD(dir, country_src, country_dst), country,
@@ -651,7 +651,7 @@ static void flow_entry_get_extended_revdns(struct flow_entry *n,
 		break;
 	}
 
-	bug_on(sizeof(n->rev_dns_src) != sizeof(n->rev_dns_dst));
+	build_bug_on(sizeof(n->rev_dns_src) != sizeof(n->rev_dns_dst));
 	getnameinfo(sa, sa_len, SELFLD(dir, rev_dns_src, rev_dns_dst),
 		    sizeof(n->rev_dns_src), NULL, 0, NI_NUMERICHOST);
 
@@ -681,7 +681,7 @@ static void flow_entry_get_extended(struct flow_entry *n)
 		walk_processes(n);
 }
 
-static uint16_t presenter_get_port(uint16_t src, uint16_t dst, int tcp)
+static uint16_t presenter_get_port(uint16_t src, uint16_t dst, bool is_tcp)
 {
 	if (src < dst && src < 1024) {
 		return src;
@@ -689,7 +689,7 @@ static uint16_t presenter_get_port(uint16_t src, uint16_t dst, int tcp)
 		return dst;
 	} else {
 		const char *tmp1, *tmp2;
-		if (tcp) {
+		if (is_tcp) {
 			tmp1 = lookup_port_tcp(src);
 			tmp2 = lookup_port_tcp(dst);
 		} else {
@@ -713,7 +713,7 @@ static char *bandw2str(double bytes, char *buf, size_t len)
 {
 	if (bytes > 1000000000.)
 		snprintf(buf, len, "%.1fG", bytes / 1000000000.);
-	if (bytes > 1000000.)
+	else if (bytes > 1000000.)
 		snprintf(buf, len, "%.1fM", bytes / 1000000.);
 	else if (bytes > 1000.)
 		snprintf(buf, len, "%.1fK", bytes / 1000.);
@@ -770,12 +770,12 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 	/* Guess application port */
 	switch (n->l4_proto) {
 	case IPPROTO_TCP:
-		port = presenter_get_port(n->port_src, n->port_dst, 1);
+		port = presenter_get_port(n->port_src, n->port_dst, true);
 		pname = lookup_port_tcp(port);
 		break;
 	case IPPROTO_UDP:
 	case IPPROTO_UDPLITE:
-		port = presenter_get_port(n->port_src, n->port_dst, 0);
+		port = presenter_get_port(n->port_src, n->port_dst, false);
 		pname = lookup_port_udp(port);
 		break;
 	}
@@ -932,7 +932,7 @@ static void presenter_screen_update(WINDOW *screen, struct flow_list *fl,
 
 	for (; n; n = rcu_dereference(n->next)) {
 		n->is_visible = false;
-		if (presenter_get_port(n->port_src, n->port_dst, 0) == 53)
+		if (presenter_get_port(n->port_src, n->port_dst, false) == 53)
 			continue;
 
 		if (presenter_flow_wrong_state(n))
@@ -1044,9 +1044,22 @@ static int collector_cb(enum nf_conntrack_msg_type type,
 	return NFCT_CB_CONTINUE;
 }
 
-static inline void collector_flush(struct nfct_handle *handle, uint8_t family)
+static inline void collector_flush(void)
 {
-	nfct_query(handle, NFCT_Q_FLUSH, &family);
+	struct nfct_handle *nfct = nfct_open(CONNTRACK, 0);
+	uint8_t family;
+
+	if (!nfct)
+		panic("Cannot create a nfct to flush connections: %s\n",
+			strerror(errno));
+
+	family = AF_INET;
+	nfct_query(nfct, NFCT_Q_FLUSH, &family);
+
+	family = AF_INET6;
+	nfct_query(nfct, NFCT_Q_FLUSH, &family);
+
+	nfct_close(nfct);
 }
 
 static void restore_sysctl(void *value)
@@ -1127,9 +1140,6 @@ static void *collector(void *null __maybe_unused)
 	if (!ct_event)
 		panic("Cannot create a nfct handle: %s\n", strerror(errno));
 
-	collector_flush(ct_event, AF_INET);
-	collector_flush(ct_event, AF_INET6);
-
 	filter = nfct_filter_create();
 	if (!filter)
 		panic("Cannot create a nfct filter: %s\n", strerror(errno));
@@ -1186,6 +1196,8 @@ static void *collector(void *null __maybe_unused)
 	if (fcntl(nfct_fd(ct_dump), F_SETFL, O_NONBLOCK) == -1)
 		panic("Cannot set non-blocking socket: fcntl(): %s\n",
 		      strerror(errno));
+
+	collector_flush();
 
 	rcu_register_thread();
 
