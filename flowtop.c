@@ -48,7 +48,8 @@ struct flow_entry {
 	uint32_t ip6_src_addr[4], ip6_dst_addr[4];
 	uint16_t port_src, port_dst;
 	uint8_t  tcp_state, tcp_flags, sctp_state, dccp_state;
-	uint64_t counter_pkts, counter_bytes;
+	uint64_t src_pkts, src_bytes;
+	uint64_t dst_pkts, dst_bytes;
 	uint64_t timestamp_start, timestamp_stop;
 	char country_src[128], country_dst[128];
 	char city_src[128], city_dst[128];
@@ -83,6 +84,7 @@ struct flow_list {
 #define INCLUDE_ICMP	(1 << 5)
 #define INCLUDE_SCTP	(1 << 6)
 
+static volatile bool is_flow_collecting;
 static volatile sig_atomic_t sigint = 0;
 static int what = INCLUDE_IPV4 | INCLUDE_IPV6 | INCLUDE_TCP, show_src = 0;
 static struct flow_list flow_list;
@@ -493,8 +495,11 @@ static void flow_entry_from_ct(struct flow_entry *n, struct nf_conntrack *ct)
 	CP_NFCT(sctp_state, ATTR_SCTP_STATE, 8);
 	CP_NFCT(dccp_state, ATTR_DCCP_STATE, 8);
 
-	CP_NFCT(counter_pkts, ATTR_ORIG_COUNTER_PACKETS, 64);
-	CP_NFCT(counter_bytes, ATTR_ORIG_COUNTER_BYTES, 64);
+	CP_NFCT(src_pkts, ATTR_ORIG_COUNTER_PACKETS, 64);
+	CP_NFCT(src_bytes, ATTR_ORIG_COUNTER_BYTES, 64);
+
+	CP_NFCT(dst_pkts, ATTR_REPL_COUNTER_PACKETS, 64);
+	CP_NFCT(dst_bytes, ATTR_REPL_COUNTER_BYTES, 64);
 
 	CP_NFCT(timestamp_start, ATTR_TIMESTAMP_START, 64);
 	CP_NFCT(timestamp_stop, ATTR_TIMESTAMP_STOP, 64);
@@ -784,18 +789,8 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 		printw(":%s", pname);
 		attroff(A_BOLD);
 	}
-	printw(" ->");
 
-	/* Number packets, bytes */
-	if (n->counter_pkts > 0 && n->counter_bytes > 0) {
-		char bytes_str[64];
-
-		printw(" (%"PRIu64" pkts, %s bytes) ->", n->counter_pkts,
-		       bandw2str(n->counter_bytes, bytes_str,
-				 sizeof(bytes_str) - 1));
-	}
-
-	/* Show source information: reverse DNS, port, country, city */
+	/* Show source information: reverse DNS, port, country, city, counters */
 	if (show_src) {
 		attron(COLOR_PAIR(1));
 		mvwprintw(screen, ++(*line), 8, "src: %s", n->rev_dns_src);
@@ -816,10 +811,18 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 			printw(")");
 		}
 
+		if (n->src_pkts > 0 && n->src_bytes > 0) {
+			char bytes_str[64];
+
+			printw(" -> (%"PRIu64" pkts, %s bytes)", n->src_pkts,
+				bandw2str(n->src_bytes, bytes_str,
+					sizeof(bytes_str) - 1));
+		}
+
 		printw(" => ");
 	}
 
-	/* Show dest information: reverse DNS, port, country, city */
+	/* Show dest information: reverse DNS, port, country, city, counters */
 	attron(COLOR_PAIR(2));
 	mvwprintw(screen, ++(*line), 8, "dst: %s", n->rev_dns_dst);
 	attroff(COLOR_PAIR(2));
@@ -837,6 +840,14 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 			printw(", %s", n->city_dst);
 
 		printw(")");
+	}
+
+	if (n->dst_pkts > 0 && n->dst_bytes > 0) {
+		char bytes_str[64];
+
+		printw(" -> (%"PRIu64" pkts, %s bytes)", n->dst_pkts,
+			bandw2str(n->dst_bytes, bytes_str,
+				sizeof(bytes_str) - 1));
 	}
 }
 
@@ -957,14 +968,21 @@ static void presenter_screen_update(WINDOW *screen, struct flow_list *fl,
 		maxy -= (2 + 1 * show_src);
 	}
 
-	mvwprintw(screen, 1, 2, "Kernel netfilter flows(%u) for %s%s%s%s%s%s"
-		  "[+%d]", flows, what & INCLUDE_TCP ? "TCP, " : "" ,
-		  what & INCLUDE_UDP ? "UDP, " : "",
-		  what & INCLUDE_SCTP ? "SCTP, " : "",
-		  what & INCLUDE_DCCP ? "DCCP, " : "",
-		  what & INCLUDE_ICMP && what & INCLUDE_IPV4 ? "ICMP, " : "",
-		  what & INCLUDE_ICMP && what & INCLUDE_IPV6 ? "ICMP6, " : "",
-		  skip_lines);
+	if (is_flow_collecting) {
+		mvwprintw(screen, 1, 2, "Collecting flows ...");
+	} else {
+		mvwprintw(screen, 1, 2,
+			"Kernel netfilter flows(%u) for %s%s%s%s%s%s"
+			"[+%d]", flows, what & INCLUDE_TCP ? "TCP, " : "",
+			what & INCLUDE_UDP ? "UDP, " : "",
+			what & INCLUDE_SCTP ? "SCTP, " : "",
+			what & INCLUDE_DCCP ? "DCCP, " : "",
+			what & INCLUDE_ICMP && what & INCLUDE_IPV4 ?
+				"ICMP, " : "",
+			what & INCLUDE_ICMP && what & INCLUDE_IPV6 ?
+				"ICMP6, " : "",
+			skip_lines);
+	}
 
 	rcu_read_unlock();
 
@@ -1016,8 +1034,8 @@ static void presenter(void)
 	lookup_cleanup_ports(PORTS_TCP);
 }
 
-static int collector_cb(enum nf_conntrack_msg_type type,
-			struct nf_conntrack *ct, void *data __maybe_unused)
+static int flow_event_cb(enum nf_conntrack_msg_type type,
+			 struct nf_conntrack *ct, void *data __maybe_unused)
 {
 	if (sigint)
 		return NFCT_CB_STOP;
@@ -1042,24 +1060,6 @@ static int collector_cb(enum nf_conntrack_msg_type type,
 	spinlock_unlock(&flow_list.lock);
 
 	return NFCT_CB_CONTINUE;
-}
-
-static inline void collector_flush(void)
-{
-	struct nfct_handle *nfct = nfct_open(CONNTRACK, 0);
-	uint8_t family;
-
-	if (!nfct)
-		panic("Cannot create a nfct to flush connections: %s\n",
-			strerror(errno));
-
-	family = AF_INET;
-	nfct_query(nfct, NFCT_Q_FLUSH, &family);
-
-	family = AF_INET6;
-	nfct_query(nfct, NFCT_Q_FLUSH, &family);
-
-	nfct_close(nfct);
 }
 
 static void restore_sysctl(void *value)
@@ -1093,7 +1093,7 @@ static void conntrack_acct_enable(void)
 	}
 }
 
-static int dump_cb(enum nf_conntrack_msg_type type,
+static int flow_update_cb(enum nf_conntrack_msg_type type,
 		   struct nf_conntrack *ct, void *data __maybe_unused)
 {
 	struct flow_entry *n;
@@ -1126,27 +1126,14 @@ static void collector_refresh_flows(struct nfct_handle *handle)
 	}
 }
 
-static void *collector(void *null __maybe_unused)
+static void collector_create_filter(struct nfct_handle *nfct)
 {
-	struct nfct_handle *ct_event;
-	struct nfct_handle *ct_dump;
 	struct nfct_filter *filter;
-	struct pollfd poll_fd[1];
 	int ret;
-
-	ct_event = nfct_open(CONNTRACK, NF_NETLINK_CONNTRACK_NEW |
-				      NF_NETLINK_CONNTRACK_UPDATE |
-				      NF_NETLINK_CONNTRACK_DESTROY);
-	if (!ct_event)
-		panic("Cannot create a nfct handle: %s\n", strerror(errno));
 
 	filter = nfct_filter_create();
 	if (!filter)
 		panic("Cannot create a nfct filter: %s\n", strerror(errno));
-
-	ret = nfct_filter_attach(nfct_fd(ct_event), filter);
-	if (ret < 0)
-		panic("Cannot attach filter to handle: %s\n", strerror(errno));
 
 	if (what & INCLUDE_UDP) {
 		nfct_filter_add_attr_u32(filter, NFCT_FILTER_L4PROTO, IPPROTO_UDP);
@@ -1171,20 +1158,133 @@ static void *collector(void *null __maybe_unused)
 		nfct_filter_add_attr(filter, NFCT_FILTER_SRC_IPV6, &filter_ipv6);
 	}
 
-	ret = nfct_filter_attach(nfct_fd(ct_event), filter);
+	ret = nfct_filter_attach(nfct_fd(nfct), filter);
 	if (ret < 0)
 		panic("Cannot attach filter to handle: %s\n", strerror(errno));
 
 	nfct_filter_destroy(filter);
+}
 
-	nfct_callback_register(ct_event, NFCT_T_ALL, collector_cb, NULL);
-	flow_list_init(&flow_list);
+/* This hand-crafted filter looks ugly but it allows to do not
+ * flush nfct connections & filter them by user specified filter.
+ * May be it is better to replace this one by nfct_cmp. */
+static int flow_dump_cb(enum nf_conntrack_msg_type type,
+			struct nf_conntrack *ct, void *data __maybe_unused)
+{
+	struct flow_entry fl;
+	struct flow_entry *n = &fl;
 
-	ct_dump = nfct_open(CONNTRACK, NF_NETLINK_CONNTRACK_UPDATE);
-	if (!ct_dump)
+	if (sigint)
+		return NFCT_CB_STOP;
+
+	synchronize_rcu();
+	spinlock_lock(&flow_list.lock);
+
+	if (!(what & ~(INCLUDE_IPV4 | INCLUDE_IPV6)))
+		goto check_addr;
+
+	CP_NFCT(l4_proto, ATTR_ORIG_L4PROTO, 8);
+
+	if (what & INCLUDE_UDP) {
+		if (n->l4_proto == IPPROTO_UDP)
+			goto check_addr;
+
+		if (n->l4_proto == IPPROTO_UDPLITE)
+			goto check_addr;
+
+	}
+	if ((what & INCLUDE_TCP) && n->l4_proto == IPPROTO_TCP)
+		goto check_addr;
+
+	if ((what & INCLUDE_DCCP) && n->l4_proto == IPPROTO_DCCP)
+		goto check_addr;
+
+	if ((what & INCLUDE_SCTP) && n->l4_proto == IPPROTO_SCTP)
+		goto check_addr;
+
+	if ((what & INCLUDE_ICMP) && (what & INCLUDE_IPV4) &&
+			n->l4_proto == IPPROTO_ICMP) {
+		goto check_addr;
+	}
+
+	if ((what & INCLUDE_ICMP) && (what & INCLUDE_IPV6) &&
+			n->l4_proto == IPPROTO_ICMPV6) {
+		goto check_addr;
+	}
+
+	goto skip_flow;
+
+check_addr:
+	/* filter loopback addresses */
+	if (what & INCLUDE_IPV4) {
+		CP_NFCT(ip4_src_addr, ATTR_ORIG_IPV4_SRC, 32);
+
+		if (n->ip4_src_addr == filter_ipv4.addr)
+			goto skip_flow;
+	}
+	if (what & INCLUDE_IPV6) {
+		CP_NFCT_BUFF(ip6_src_addr, ATTR_ORIG_IPV6_SRC);
+
+		if (n->ip6_src_addr[0] == 0x0 &&
+		    n->ip6_src_addr[1] == 0x0 &&
+		    n->ip6_src_addr[2] == 0x0 &&
+		    n->ip6_src_addr[3] == 0x1)
+			goto skip_flow;
+	}
+
+	flow_list_new_entry(&flow_list, ct);
+
+skip_flow:
+	spinlock_unlock(&flow_list.lock);
+	return NFCT_CB_CONTINUE;
+}
+
+static void collector_dump_flows(void)
+{
+	struct nfct_handle *nfct = nfct_open(CONNTRACK, 0);
+
+	if (!nfct)
 		panic("Cannot create a nfct handle: %s\n", strerror(errno));
 
-	nfct_callback_register(ct_dump, NFCT_T_ALL, dump_cb, NULL);
+	nfct_callback_register(nfct, NFCT_T_ALL, flow_dump_cb, NULL);
+
+	is_flow_collecting = true;
+	if (what & INCLUDE_IPV4) {
+		int family = AF_INET;
+		nfct_query(nfct, NFCT_Q_DUMP, &family);
+	}
+	if (what & INCLUDE_IPV6) {
+		int family = AF_INET6;
+		nfct_query(nfct, NFCT_Q_DUMP, &family);
+	}
+	is_flow_collecting = false;
+
+	nfct_close(nfct);
+}
+
+static void *collector(void *null __maybe_unused)
+{
+	struct nfct_handle *ct_update;
+	struct nfct_handle *ct_event;
+	struct pollfd poll_fd[1];
+
+	flow_list_init(&flow_list);
+
+	ct_event = nfct_open(CONNTRACK, NF_NETLINK_CONNTRACK_NEW |
+				      NF_NETLINK_CONNTRACK_UPDATE |
+				      NF_NETLINK_CONNTRACK_DESTROY);
+	if (!ct_event)
+		panic("Cannot create a nfct handle: %s\n", strerror(errno));
+
+	collector_create_filter(ct_event);
+
+	nfct_callback_register(ct_event, NFCT_T_ALL, flow_event_cb, NULL);
+
+	ct_update = nfct_open(CONNTRACK, NF_NETLINK_CONNTRACK_UPDATE);
+	if (!ct_update)
+		panic("Cannot create a nfct handle: %s\n", strerror(errno));
+
+	nfct_callback_register(ct_update, NFCT_T_ALL, flow_update_cb, NULL);
 
 	poll_fd[0].fd = nfct_fd(ct_event);
 	poll_fd[0].events = POLLIN;
@@ -1193,20 +1293,20 @@ static void *collector(void *null __maybe_unused)
 		panic("Cannot set non-blocking socket: fcntl(): %s\n",
 		      strerror(errno));
 
-	if (fcntl(nfct_fd(ct_dump), F_SETFL, O_NONBLOCK) == -1)
+	if (fcntl(nfct_fd(ct_update), F_SETFL, O_NONBLOCK) == -1)
 		panic("Cannot set non-blocking socket: fcntl(): %s\n",
 		      strerror(errno));
 
-	collector_flush();
-
 	rcu_register_thread();
 
-	while (!sigint && ret >= 0) {
+	collector_dump_flows();
+
+	while (!sigint) {
 		int status;
 
 		usleep(300000);
 
-		collector_refresh_flows(ct_dump);
+		collector_refresh_flows(ct_update);
 
 		status = poll(poll_fd, 1, 0);
 		if (status < 0) {
@@ -1226,7 +1326,7 @@ static void *collector(void *null __maybe_unused)
 
 	flow_list_destroy(&flow_list);
 	nfct_close(ct_event);
-	nfct_close(ct_dump);
+	nfct_close(ct_update);
 
 	pthread_exit(NULL);
 }
@@ -1281,8 +1381,12 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (what_cmd > 0)
+	if (what_cmd > 0) {
 		what = what_cmd;
+
+		if (!(what & (INCLUDE_IPV4 | INCLUDE_IPV6)))
+			what |= INCLUDE_IPV4 | INCLUDE_IPV6;
+	}
 
 	rcu_init();
 
