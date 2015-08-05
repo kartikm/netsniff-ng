@@ -205,6 +205,8 @@ static void signal_handler(int number)
 static void flow_entry_from_ct(struct flow_entry *n, struct nf_conntrack *ct);
 static void flow_entry_get_extended(struct flow_entry *n);
 
+static bool nfct_is_dns(struct nf_conntrack *ct);
+
 static void help(void)
 {
 	printf("flowtop %s, top-like netfilter TCP/UDP/SCTP/.. flow tracking\n",
@@ -264,7 +266,15 @@ static inline void flow_list_init(struct flow_list *fl)
 
 static void flow_list_new_entry(struct flow_list *fl, struct nf_conntrack *ct)
 {
-	struct flow_entry *n = flow_entry_xalloc();
+	struct flow_entry *n;
+
+	/* We don't want to analyze / display DNS itself, since we
+	 * use it to resolve reverse dns.
+	 */
+	if (nfct_is_dns(ct))
+		return;
+
+	n = flow_entry_xalloc();
 
 	n->ct = nfct_clone(ct);
 
@@ -522,12 +532,15 @@ enum flow_entry_direction {
 	flow_entry_dst,
 };
 
-static inline bool flow_entry_get_extended_is_dns(struct flow_entry *n)
+static bool nfct_is_dns(struct nf_conntrack *ct)
 {
-	/* We don't want to analyze / display DNS itself, since we
-	 * use it to resolve reverse dns.
-	 */
-	return n->port_src == 53 || n->port_dst == 53;
+	struct flow_entry fl;
+	struct flow_entry *n = &fl;
+
+	CP_NFCT(port_src, ATTR_ORIG_PORT_SRC, 16);
+	CP_NFCT(port_dst, ATTR_ORIG_PORT_DST, 16);
+
+	return ntohs(n->port_src) == 53 || ntohs(n->port_dst) == 53;
 }
 
 #define SELFLD(dir,src_member,dst_member)	\
@@ -670,11 +683,13 @@ static void flow_entry_get_extended_revdns(struct flow_entry *n,
 
 static void flow_entry_get_extended(struct flow_entry *n)
 {
-	if (n->flow_id == 0 || flow_entry_get_extended_is_dns(n))
+	if (n->flow_id == 0)
 		return;
 
-	flow_entry_get_extended_revdns(n, flow_entry_src);
-	flow_entry_get_extended_geo(n, flow_entry_src);
+	if (show_src) {
+		flow_entry_get_extended_revdns(n, flow_entry_src);
+		flow_entry_get_extended_geo(n, flow_entry_src);
+	}
 
 	flow_entry_get_extended_revdns(n, flow_entry_dst);
 	flow_entry_get_extended_geo(n, flow_entry_dst);
@@ -943,8 +958,6 @@ static void presenter_screen_update(WINDOW *screen, struct flow_list *fl,
 
 	for (; n; n = rcu_dereference(n->next)) {
 		n->is_visible = false;
-		if (presenter_get_port(n->port_src, n->port_dst, false) == 53)
-			continue;
 
 		if (presenter_flow_wrong_state(n))
 			continue;
@@ -968,21 +981,18 @@ static void presenter_screen_update(WINDOW *screen, struct flow_list *fl,
 		maxy -= (2 + 1 * show_src);
 	}
 
-	if (is_flow_collecting) {
-		mvwprintw(screen, 1, 2, "Collecting flows ...");
-	} else {
-		mvwprintw(screen, 1, 2,
-			"Kernel netfilter flows(%u) for %s%s%s%s%s%s"
-			"[+%d]", flows, what & INCLUDE_TCP ? "TCP, " : "",
-			what & INCLUDE_UDP ? "UDP, " : "",
-			what & INCLUDE_SCTP ? "SCTP, " : "",
-			what & INCLUDE_DCCP ? "DCCP, " : "",
-			what & INCLUDE_ICMP && what & INCLUDE_IPV4 ?
-				"ICMP, " : "",
-			what & INCLUDE_ICMP && what & INCLUDE_IPV6 ?
-				"ICMP6, " : "",
-			skip_lines);
-	}
+	mvwprintw(screen, 1, 2,
+		"Kernel netfilter flows(%u) for %s%s%s%s%s%s"
+		"[+%d]", flows, what & INCLUDE_TCP ? "TCP, " : "",
+		what & INCLUDE_UDP  ? "UDP, "  : "",
+		what & INCLUDE_SCTP ? "SCTP, " : "",
+		what & INCLUDE_DCCP ? "DCCP, " : "",
+		what & INCLUDE_ICMP && what & INCLUDE_IPV4 ? "ICMP, " : "",
+		what & INCLUDE_ICMP && what & INCLUDE_IPV6 ? "ICMP6, " : "",
+		skip_lines);
+
+	if (is_flow_collecting)
+		printw(" [Collecting flows ...]");
 
 	rcu_read_unlock();
 
