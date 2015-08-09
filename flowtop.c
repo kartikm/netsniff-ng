@@ -48,8 +48,8 @@ struct flow_entry {
 	uint32_t ip6_src_addr[4], ip6_dst_addr[4];
 	uint16_t port_src, port_dst;
 	uint8_t  tcp_state, tcp_flags, sctp_state, dccp_state;
-	uint64_t src_pkts, src_bytes;
-	uint64_t dst_pkts, dst_bytes;
+	uint64_t pkts_src, bytes_src;
+	uint64_t pkts_dst, bytes_dst;
 	uint64_t timestamp_start, timestamp_stop;
 	char country_src[128], country_dst[128];
 	char city_src[128], city_dst[128];
@@ -205,8 +205,6 @@ static void signal_handler(int number)
 static void flow_entry_from_ct(struct flow_entry *n, struct nf_conntrack *ct);
 static void flow_entry_get_extended(struct flow_entry *n);
 
-static bool nfct_is_dns(struct nf_conntrack *ct);
-
 static void help(void)
 {
 	printf("flowtop %s, top-like netfilter TCP/UDP/SCTP/.. flow tracking\n",
@@ -262,6 +260,14 @@ static inline void flow_list_init(struct flow_list *fl)
 {
 	fl->head = NULL;
 	spinlock_init(&fl->lock);
+}
+
+static inline bool nfct_is_dns(struct nf_conntrack *ct)
+{
+	uint16_t port_src = nfct_get_attr_u16(ct, ATTR_ORIG_PORT_SRC);
+	uint16_t port_dst = nfct_get_attr_u16(ct, ATTR_ORIG_PORT_DST);
+
+	return ntohs(port_src) == 53 || ntohs(port_dst) == 53;
 }
 
 static void flow_list_new_entry(struct flow_list *fl, struct nf_conntrack *ct)
@@ -505,11 +511,11 @@ static void flow_entry_from_ct(struct flow_entry *n, struct nf_conntrack *ct)
 	CP_NFCT(sctp_state, ATTR_SCTP_STATE, 8);
 	CP_NFCT(dccp_state, ATTR_DCCP_STATE, 8);
 
-	CP_NFCT(src_pkts, ATTR_ORIG_COUNTER_PACKETS, 64);
-	CP_NFCT(src_bytes, ATTR_ORIG_COUNTER_BYTES, 64);
+	CP_NFCT(pkts_src, ATTR_ORIG_COUNTER_PACKETS, 64);
+	CP_NFCT(bytes_src, ATTR_ORIG_COUNTER_BYTES, 64);
 
-	CP_NFCT(dst_pkts, ATTR_REPL_COUNTER_PACKETS, 64);
-	CP_NFCT(dst_bytes, ATTR_REPL_COUNTER_BYTES, 64);
+	CP_NFCT(pkts_dst, ATTR_REPL_COUNTER_PACKETS, 64);
+	CP_NFCT(bytes_dst, ATTR_REPL_COUNTER_BYTES, 64);
 
 	CP_NFCT(timestamp_start, ATTR_TIMESTAMP_START, 64);
 	CP_NFCT(timestamp_stop, ATTR_TIMESTAMP_STOP, 64);
@@ -531,17 +537,6 @@ enum flow_entry_direction {
 	flow_entry_src,
 	flow_entry_dst,
 };
-
-static bool nfct_is_dns(struct nf_conntrack *ct)
-{
-	struct flow_entry fl;
-	struct flow_entry *n = &fl;
-
-	CP_NFCT(port_src, ATTR_ORIG_PORT_SRC, 16);
-	CP_NFCT(port_dst, ATTR_ORIG_PORT_DST, 16);
-
-	return ntohs(n->port_src) == 53 || ntohs(n->port_dst) == 53;
-}
 
 #define SELFLD(dir,src_member,dst_member)	\
 	(((dir) == flow_entry_src) ? n->src_member : n->dst_member)
@@ -743,6 +738,18 @@ static char *bandw2str(double bytes, char *buf, size_t len)
 	return buf;
 }
 
+static void presenter_print_counters(uint64_t bytes, uint64_t pkts, int color)
+{
+	char bytes_str[64];
+
+	printw(" -> (");
+	attron(COLOR_PAIR(color));
+	printw("%"PRIu64" pkts, ", pkts);
+	printw("%s bytes", bandw2str(bytes, bytes_str, sizeof(bytes_str) - 1));
+	attroff(COLOR_PAIR(color));
+	printw(")");
+}
+
 static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 				     unsigned int *line)
 {
@@ -826,13 +833,8 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 			printw(")");
 		}
 
-		if (n->src_pkts > 0 && n->src_bytes > 0) {
-			char bytes_str[64];
-
-			printw(" -> (%"PRIu64" pkts, %s bytes)", n->src_pkts,
-				bandw2str(n->src_bytes, bytes_str,
-					sizeof(bytes_str) - 1));
-		}
+		if (n->pkts_src > 0 && n->bytes_src > 0)
+			presenter_print_counters(n->bytes_src, n->pkts_src, 1);
 
 		printw(" => ");
 	}
@@ -857,13 +859,8 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 		printw(")");
 	}
 
-	if (n->dst_pkts > 0 && n->dst_bytes > 0) {
-		char bytes_str[64];
-
-		printw(" -> (%"PRIu64" pkts, %s bytes)", n->dst_pkts,
-			bandw2str(n->dst_bytes, bytes_str,
-				sizeof(bytes_str) - 1));
-	}
+	if (n->pkts_dst > 0 && n->bytes_dst > 0)
+		presenter_print_counters(n->bytes_dst, n->pkts_dst, 2);
 }
 
 static inline bool presenter_flow_wrong_state(struct flow_entry *n)
