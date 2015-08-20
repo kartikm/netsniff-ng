@@ -20,9 +20,8 @@ HAVE_TPACKET3=0
 
 # use "CROSS_COMPILE=<prefix> SYSROOT=<path> ./configure && make" for cross compilation
 
-[ -z $CC ] && CC="${CROSS_COMPILE}gcc"
-[ -z $LD ] && LD="${CROSS_COMPILE}gcc"
-[ -z $STRIP ] && STRIP="${CROSS_COMPILE}strip"
+[ -z "$CC" ] && CC="${CROSS_COMPILE}gcc"
+[ -z "$LD" ] && LD="${CROSS_COMPILE}gcc"
 if [ "x$SYSROOT" != "x" ] ; then
 	PKG_CONFIG_PATH="$SYSROOT/usr/lib/pkgconfig:$PKG_CONFIG_PATH"
 fi
@@ -85,16 +84,6 @@ check_toolchain()
 		echo "PKG_CONFIG=$PKG_CONFIG" >> Config
 		echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> Config
 	fi
-
-	echo -n "[*] Checking $STRIP ... "
-	if [ "x$(which $STRIP 2>> config.log)" == "x" ] ; then
-		echo "[NO]"
-		MISSING_TOOLCHAIN=1
-	else
-		echo "[YES]"
-		echo "STRIP=$STRIP" >> Config
-	fi
-
 }
 
 check_flex()
@@ -141,11 +130,11 @@ int main(void) { }
 EOF
 
 	if [ -z $NACL_INC_DIR ] ; then
-		NACL_INC_DIR="/usr/include/nacl"
+		NACL_INC_DIR="$SYSROOT/usr/include/nacl"
 	fi
 
 	if [ -z $NACL_LIB_DIR ] ; then
-		NACL_LIB_DIR="/usr/lib"
+		NACL_LIB_DIR="$SYSROOT/usr/lib"
 	fi
 
 	if [ -z $NACL_LIB ] ; then
