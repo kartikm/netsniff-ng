@@ -12,6 +12,8 @@ enum csum {
 	CSUM_IP,
 	CSUM_UDP,
 	CSUM_TCP,
+	CSUM_UDP6,
+	CSUM_TCP6,
 };
 
 struct counter {
@@ -43,7 +45,12 @@ struct packet_dyn {
 	size_t slen;
 };
 
-extern int compile_packets(char *file, int verbose, int cpu, bool invoke_cpp);
+static inline bool packet_dyn_has_elems(struct packet_dyn *p)
+{
+	return (p->rlen || p->slen || p->clen);
+}
+
+extern void compile_packets(char *file, bool verbose, unsigned int cpu, bool invoke_cpp);
 extern void cleanup_packets(void);
 
 #endif /* TRAFGEN_CONF */

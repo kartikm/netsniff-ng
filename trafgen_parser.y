@@ -66,11 +66,6 @@ static inline int test_ignore(void)
 		return 1;
 }
 
-static inline int has_dynamic_elems(struct packet_dyn *p)
-{
-	return (p->rlen + p->slen + p->clen);
-}
-
 static inline void __init_new_packet_slot(struct packet *slot)
 {
 	slot->payload = NULL;
@@ -200,9 +195,21 @@ static void __set_csum16_static(size_t from, size_t to, enum csum which __maybe_
 	set_byte(psum[1]);
 }
 
+static inline bool is_dynamic_csum(enum csum which)
+{
+	switch (which) {
+	case CSUM_UDP:
+	case CSUM_TCP:
+	case CSUM_UDP6:
+	case CSUM_TCP6:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static void set_csum16(size_t from, size_t to, enum csum which)
 {
-	int make_it_dynamic = 0;
 	struct packet *pkt = &packets[packet_last];
 	struct packet_dyn *pktd = &packet_dyn[packetd_last];
 
@@ -218,10 +225,7 @@ static void set_csum16(size_t from, size_t to, enum csum which)
 
 	bug_on(!(from < to));
 
-	if (to >= pkt->len || which == CSUM_TCP || which == CSUM_UDP)
-		make_it_dynamic = 1;
-
-	if (has_dynamic_elems(pktd) || make_it_dynamic)
+	if (packet_dyn_has_elems(pktd) || to >= pkt->len || is_dynamic_csum(which))
 		__set_csum16_dynamic(from, to, which);
 	else
 		__set_csum16_static(from, to, which);
@@ -320,7 +324,7 @@ static void set_dynamic_incdec(uint8_t start, uint8_t stop, uint8_t stepping,
 }
 
 %token K_COMMENT K_FILL K_RND K_SEQINC K_SEQDEC K_DRND K_DINC K_DDEC K_WHITE
-%token K_CPU K_CSUMIP K_CSUMUDP K_CSUMTCP K_CONST8 K_CONST16 K_CONST32 K_CONST64
+%token K_CPU K_CSUMIP K_CSUMUDP K_CSUMTCP K_CSUMUDP6 K_CSUMTCP6 K_CONST8 K_CONST16 K_CONST32 K_CONST64
 
 %token ',' '{' '}' '(' ')' '[' ']' ':' '-' '+' '*' '/' '%' '&' '|' '<' '>' '^'
 
@@ -479,6 +483,10 @@ csum
 		{ set_csum16($3, $5, CSUM_TCP); }
 	| K_CSUMUDP '(' number delimiter number ')'
 		{ set_csum16($3, $5, CSUM_UDP); }
+	| K_CSUMTCP6 '(' number delimiter number ')'
+		{ set_csum16($3, $5, CSUM_TCP6); }
+	| K_CSUMUDP6 '(' number delimiter number ')'
+		{ set_csum16($3, $5, CSUM_UDP6); }
 	;
 
 seqinc
@@ -579,9 +587,10 @@ void cleanup_packets(void)
 	free(packet_dyn);
 }
 
-int compile_packets(char *file, int verbose, int cpu, bool invoke_cpp)
+void compile_packets(char *file, bool verbose, unsigned int cpu, bool invoke_cpp)
 {
 	char tmp_file[128];
+	int ret = -1;
 
 	memset(tmp_file, 0, sizeof(tmp_file));
 	our_cpu = cpu;
@@ -595,8 +604,10 @@ int compile_packets(char *file, int verbose, int cpu, bool invoke_cpp)
 		slprintf(tmp_file, sizeof(tmp_file), "%s/.tmp-%u-%s", dir, rand(), base);
 		slprintf(cmd, sizeof(cmd), "cpp -I" ETCDIRE_STRING " %s > %s",
 			 file, tmp_file);
-		if (system(cmd) != 0)
-			panic("Failed to invoke C preprocessor!\n");
+		if (system(cmd) != 0) {
+			fprintf(stderr, "Failed to invoke C preprocessor!\n");
+			goto err;
+		}
 
 		file = tmp_file;
 		xfree(a);
@@ -607,24 +618,30 @@ int compile_packets(char *file, int verbose, int cpu, bool invoke_cpp)
 		yyin = stdin;
 	else
 		yyin = fopen(file, "r");
-	if (!yyin)
-		panic("Cannot open %s: %s!\n", file, strerror(errno));
+	if (!yyin) {
+		fprintf(stderr, "Cannot open %s: %s!\n", file, strerror(errno));
+		goto err;
+	}
 
 	realloc_packet();
-	yyparse();
+	if (yyparse() != 0)
+		goto err;
 	finalize_packet();
 
 	if (our_cpu == 0 && verbose)
 		dump_conf();
 
+	ret = 0;
+err:
 	fclose(yyin);
+
 	if (invoke_cpp)
 		unlink(tmp_file);
-
-	return 0;
+	if (ret)
+		die();
 }
 
 void yyerror(const char *err)
 {
-	panic("Syntax error at line%d, at char '%s'! %s!\n", yylineno, yytext, err);
+	fprintf(stderr, "Syntax error at line %d, char '%s': %s\n", yylineno, yytext, err);
 }
