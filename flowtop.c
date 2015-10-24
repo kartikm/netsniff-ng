@@ -19,6 +19,7 @@
 #include <curses.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/fsuid.h>
 #include <urcu.h>
 #include <libgen.h>
@@ -58,12 +59,17 @@ struct flow_entry {
 	char country_src[128], country_dst[128];
 	char city_src[128], city_dst[128];
 	char rev_dns_src[256], rev_dns_dst[256];
-	char cmdline[256];
+	char procname[256];
 	struct flow_entry *next;
 	int inode;
 	unsigned int procnum;
 	bool is_visible;
 	struct nf_conntrack *ct;
+	struct timeval last_update;
+	double rate_bytes_src;
+	double rate_bytes_dst;
+	double rate_pkts_src;
+	double rate_pkts_dst;
 };
 
 struct flow_list {
@@ -197,6 +203,18 @@ static const struct nfct_filter_ipv6 filter_ipv6 = {
 	.mask = { 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff },
 };
 
+static int64_t time_after_us(struct timeval *tv)
+{
+	struct timeval now;
+
+	gettimeofday(&now, NULL);
+
+	now.tv_sec  -= tv->tv_sec;
+	now.tv_usec -= tv->tv_usec;
+
+	return now.tv_sec * 1000000 + now.tv_usec;
+}
+
 static void signal_handler(int number)
 {
 	switch (number) {
@@ -211,7 +229,7 @@ static void signal_handler(int number)
 	}
 }
 
-static void flow_entry_from_ct(struct flow_entry *n, struct nf_conntrack *ct);
+static void flow_entry_from_ct(struct flow_entry *n, const struct nf_conntrack *ct);
 static void flow_entry_get_extended(struct flow_entry *n);
 
 static void help(void)
@@ -252,6 +270,28 @@ static void version(void)
 	die();
 }
 
+static void flow_entry_update_time(struct flow_entry *n)
+{
+	gettimeofday(&n->last_update, NULL);
+}
+
+static void flow_entry_calc_rate(struct flow_entry *n, const struct nf_conntrack *ct)
+{
+	uint64_t bytes_src = nfct_get_attr_u64(ct, ATTR_ORIG_COUNTER_BYTES);
+	uint64_t bytes_dst = nfct_get_attr_u64(ct, ATTR_REPL_COUNTER_BYTES);
+	uint64_t pkts_src  = nfct_get_attr_u64(ct, ATTR_ORIG_COUNTER_PACKETS);
+	uint64_t pkts_dst  = nfct_get_attr_u64(ct, ATTR_REPL_COUNTER_PACKETS);
+	double sec = time_after_us(&n->last_update) / 1000000.0;
+
+	if (sec <= 0)
+		return;
+
+	n->rate_bytes_src = (bytes_src - n->bytes_src) / sec;
+	n->rate_bytes_dst = (bytes_dst - n->bytes_dst) / sec;
+	n->rate_pkts_src = (pkts_src - n->pkts_src) / sec;
+	n->rate_pkts_dst = (pkts_dst - n->pkts_dst) / sec;
+}
+
 static inline struct flow_entry *flow_entry_xalloc(void)
 {
 	return xzmalloc(sizeof(struct flow_entry));
@@ -271,7 +311,7 @@ static inline void flow_list_init(struct flow_list *fl)
 	spinlock_init(&fl->lock);
 }
 
-static inline bool nfct_is_dns(struct nf_conntrack *ct)
+static inline bool nfct_is_dns(const struct nf_conntrack *ct)
 {
 	uint16_t port_src = nfct_get_attr_u16(ct, ATTR_ORIG_PORT_SRC);
 	uint16_t port_dst = nfct_get_attr_u16(ct, ATTR_ORIG_PORT_DST);
@@ -279,7 +319,7 @@ static inline bool nfct_is_dns(struct nf_conntrack *ct)
 	return ntohs(port_src) == 53 || ntohs(port_dst) == 53;
 }
 
-static void flow_list_new_entry(struct flow_list *fl, struct nf_conntrack *ct)
+static void flow_list_new_entry(struct flow_list *fl, const struct nf_conntrack *ct)
 {
 	struct flow_entry *n;
 
@@ -293,6 +333,7 @@ static void flow_list_new_entry(struct flow_list *fl, struct nf_conntrack *ct)
 
 	n->ct = nfct_clone(ct);
 
+	flow_entry_update_time(n);
 	flow_entry_from_ct(n, ct);
 	flow_entry_get_extended(n);
 
@@ -315,7 +356,7 @@ static struct flow_entry *flow_list_find_id(struct flow_list *fl,
 	return NULL;
 }
 
-static struct flow_entry *flow_list_find_prev_id(struct flow_list *fl,
+static struct flow_entry *flow_list_find_prev_id(const struct flow_list *fl,
 						 uint32_t id)
 {
 	struct flow_entry *prev = rcu_dereference(fl->head), *next;
@@ -334,7 +375,7 @@ static struct flow_entry *flow_list_find_prev_id(struct flow_list *fl,
 }
 
 static void flow_list_update_entry(struct flow_list *fl,
-				   struct nf_conntrack *ct)
+				   const struct nf_conntrack *ct)
 {
 	struct flow_entry *n;
 
@@ -348,7 +389,7 @@ static void flow_list_update_entry(struct flow_list *fl,
 }
 
 static void flow_list_destroy_entry(struct flow_list *fl,
-				    struct nf_conntrack *ct)
+				    const struct nf_conntrack *ct)
 {
 	struct flow_entry *n1, *n2;
 	uint32_t id = nfct_get_attr_u32(ct, ATTR_ID);
@@ -411,10 +452,14 @@ static int walk_process(unsigned int pid, struct flow_entry *n)
 			continue;
 
 		if (S_ISSOCK(statbuf.st_mode) && (ino_t) n->inode == statbuf.st_ino) {
-			ret = proc_get_cmdline(pid, n->cmdline, sizeof(n->cmdline));
+			char cmdline[256];
+
+			ret = proc_get_cmdline(pid, cmdline, sizeof(cmdline));
 			if (ret < 0)
 				panic("Failed to get process cmdline: %s\n", strerror(errno));
 
+			if (snprintf(n->procname, sizeof(n->procname), "%s", basename(cmdline)) < 0)
+				n->procname[0] = '\0';
 			n->procnum = pid;
 			closedir(dir);
 			return 1;
@@ -433,7 +478,7 @@ static void walk_processes(struct flow_entry *n)
 
 	/* n->inode must be set */
 	if (n->inode <= 0) {
-		n->cmdline[0] = '\0';
+		n->procname[0] = '\0';
 		return;
 	}
 
@@ -502,7 +547,7 @@ static int get_port_inode(uint16_t port, int proto, bool is_ip6)
 		memcpy(n->elem, buff, sizeof(n->elem));	\
 } while (0)
 
-static void flow_entry_from_ct(struct flow_entry *n, struct nf_conntrack *ct)
+static void flow_entry_from_ct(struct flow_entry *n, const struct nf_conntrack *ct)
 {
 	CP_NFCT(l3_proto, ATTR_ORIG_L3PROTO, 8);
 	CP_NFCT(l4_proto, ATTR_ORIG_L4PROTO, 8);
@@ -550,7 +595,7 @@ enum flow_entry_direction {
 #define SELFLD(dir,src_member,dst_member)	\
 	(((dir) == flow_entry_src) ? n->src_member : n->dst_member)
 
-static void flow_entry_get_sain4_obj(struct flow_entry *n,
+static void flow_entry_get_sain4_obj(const struct flow_entry *n,
 				     enum flow_entry_direction dir,
 				     struct sockaddr_in *sa)
 {
@@ -559,7 +604,7 @@ static void flow_entry_get_sain4_obj(struct flow_entry *n,
 	sa->sin_addr.s_addr = htonl(SELFLD(dir, ip4_src_addr, ip4_dst_addr));
 }
 
-static void flow_entry_get_sain6_obj(struct flow_entry *n,
+static void flow_entry_get_sain6_obj(const struct flow_entry *n,
 				     enum flow_entry_direction dir,
 				     struct sockaddr_in6 *sa)
 {
@@ -747,19 +792,41 @@ static char *bandw2str(double bytes, char *buf, size_t len)
 	return buf;
 }
 
-static void presenter_print_counters(uint64_t bytes, uint64_t pkts, int color)
+static char *rate2str(double rate, char *buf, size_t len)
+{
+	if (rate > 1000000000.)
+		snprintf(buf, len, "%.1fGb/s", rate / 1000000000.);
+	else if (rate > 1000000.)
+		snprintf(buf, len, "%.1fMb/s", rate / 1000000.);
+	else if (rate > 1000.)
+		snprintf(buf, len, "%.1fKb/s", rate / 1000.);
+	else
+		snprintf(buf, len, "%gB/s", rate);
+
+	return buf;
+}
+
+static void presenter_print_counters(uint64_t bytes, uint64_t pkts,
+				     double rate_bytes, double rate_pkts,
+				     int color)
 {
 	char bytes_str[64];
 
 	printw(" -> (");
 	attron(COLOR_PAIR(color));
-	printw("%"PRIu64" pkts, ", pkts);
-	printw("%s bytes", bandw2str(bytes, bytes_str, sizeof(bytes_str) - 1));
+	printw("%"PRIu64" pkts", pkts);
+	if (rate_pkts)
+		printw("(%.1fpps)", rate_pkts);
+
+	printw(", %s bytes", bandw2str(bytes, bytes_str, sizeof(bytes_str) - 1));
+	if (rate_bytes)
+		printw("(%s)", rate2str(rate_bytes, bytes_str,
+			sizeof(bytes_str) - 1));
 	attroff(COLOR_PAIR(color));
 	printw(")");
 }
 
-static void presenter_print_flow_entry_time(struct flow_entry *n)
+static void presenter_print_flow_entry_time(const struct flow_entry *n)
 {
 	int h, m, s;
 	time_t now;
@@ -785,7 +852,7 @@ static void presenter_print_flow_entry_time(struct flow_entry *n)
 	printw(" ]");
 }
 
-static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
+static void presenter_screen_do_line(WINDOW *screen, const struct flow_entry *n,
 				     unsigned int *line)
 {
 	char tmp[128], *pname = NULL;
@@ -795,8 +862,7 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 
 	/* PID, application name */
 	if (n->procnum > 0) {
-		slprintf(tmp, sizeof(tmp), "%s(%d)", basename(n->cmdline),
-			 n->procnum);
+		slprintf(tmp, sizeof(tmp), "%s(%d)", n->procname, n->procnum);
 
 		printw("[");
 		attron(COLOR_PAIR(3));
@@ -872,7 +938,9 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 		}
 
 		if (n->pkts_src > 0 && n->bytes_src > 0)
-			presenter_print_counters(n->bytes_src, n->pkts_src, 1);
+			presenter_print_counters(n->bytes_src, n->pkts_src,
+						 n->rate_bytes_src,
+						 n->rate_pkts_src, 1);
 
 		printw(" => ");
 	}
@@ -898,7 +966,9 @@ static void presenter_screen_do_line(WINDOW *screen, struct flow_entry *n,
 	}
 
 	if (n->pkts_dst > 0 && n->bytes_dst > 0)
-		presenter_print_counters(n->bytes_dst, n->pkts_dst, 2);
+		presenter_print_counters(n->bytes_dst, n->pkts_dst,
+					 n->rate_bytes_dst,
+					 n->rate_pkts_dst, 2);
 }
 
 static inline bool presenter_flow_wrong_state(struct flow_entry *n)
@@ -1162,7 +1232,7 @@ static void conntrack_tstamp_enable(void)
 }
 
 static int flow_update_cb(enum nf_conntrack_msg_type type,
-		   struct nf_conntrack *ct, void *data __maybe_unused)
+			  struct nf_conntrack *ct, void *data __maybe_unused)
 {
 	struct flow_entry *n;
 
@@ -1176,6 +1246,8 @@ static int flow_update_cb(enum nf_conntrack_msg_type type,
 	if (!n)
 		return NFCT_CB_CONTINUE;
 
+	flow_entry_calc_rate(n, ct);
+	flow_entry_update_time(n);
 	flow_entry_from_ct(n, ct);
 
 	return NFCT_CB_CONTINUE;
@@ -1372,7 +1444,7 @@ static void *collector(void *null __maybe_unused)
 	while (!sigint) {
 		int status;
 
-		usleep(300000);
+		usleep(1000000);
 
 		collector_refresh_flows(ct_update);
 
