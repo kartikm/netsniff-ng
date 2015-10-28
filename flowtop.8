@@ -27,6 +27,7 @@ local system, e.g. for debugging purposes or to answer questions like:
     * Are there any suspicious background connections on my machine?
     * How many active connections does binary Y have?
     * How long are connections active already?
+    * At which rate am I sending/receiving data?
 .PP
 The following information will be presented in flowtop's output:
 .PP
@@ -38,6 +39,7 @@ The following information will be presented in flowtop's output:
     * Transport protocol state machine information
     * Byte/packet counters (if they are enabled)
     * Connection duration (if timestamping is enabled)
+    * Flow send/receive rate (if byte/packet counters are enabled)
 .PP
 In order for flowtop to work, netfilter must be active and running
 on your machine, thus kernel-side connection tracking is active. If netfilter
@@ -101,6 +103,14 @@ Display ICMP version 4 and version 6 flows.
 .SS -S, --sctp
 Display SCTP flows.
 .PP
+.SS -n, --no-dns
+Don't perform hostname lookup. Only numeric addresses will be shown for flow
+endpoints.
+.PP
+.SS -G, --no-geoip
+Don't perform GeoIP lookup. No geographical information will be shown for flow
+endpoints.
+.PP
 .SS -s, --show-src
 Also show source information of the flow, not only destination information.
 .PP
@@ -111,6 +121,9 @@ latest database. To configure search locations for databases, the file
 bandwidth or for mirroring Maxmind's databases (to bypass their traffic
 limit policy), different hosts or IP addresses can be placed into geoip.conf,
 separated by a newline.
+.PP
+.SS -t <time>, --interval <time>
+Flow info refresh interval in seconds, default is 1s.
 .PP
 .SS -v, --version
 Show version information and exit.

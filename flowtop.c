@@ -26,6 +26,7 @@
 #include <inttypes.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <arpa/inet.h>
 
 #include "die.h"
 #include "xmalloc.h"
@@ -44,6 +45,10 @@
 
 #ifndef NSEC_PER_SEC
 #define NSEC_PER_SEC 1000000000L
+#endif
+
+#ifndef USEC_PER_SEC
+#define USEC_PER_SEC 1000000L
 #endif
 
 struct flow_entry {
@@ -101,11 +106,16 @@ struct sysctl_params_ctx {
 
 static volatile bool is_flow_collecting;
 static volatile sig_atomic_t sigint = 0;
-static int what = INCLUDE_IPV4 | INCLUDE_IPV6 | INCLUDE_TCP, show_src = 0;
+static int what = INCLUDE_IPV4 | INCLUDE_IPV6 | INCLUDE_TCP;
 static struct flow_list flow_list;
 static struct sysctl_params_ctx sysctl = { -1, -1 };
 
-static const char *short_options = "vhTUsDIS46u";
+static unsigned int interval = 1;
+static bool show_src = false;
+static bool resolve_dns = true;
+static bool resolve_geoip = true;
+
+static const char *short_options = "vhTUsDIS46ut:nG";
 static const struct option long_options[] = {
 	{"ipv4",	no_argument,		NULL, '4'},
 	{"ipv6",	no_argument,		NULL, '6'},
@@ -114,8 +124,11 @@ static const struct option long_options[] = {
 	{"dccp",	no_argument,		NULL, 'D'},
 	{"icmp",	no_argument,		NULL, 'I'},
 	{"sctp",	no_argument,		NULL, 'S'},
+	{"no-dns",      no_argument,		NULL, 'n'},
+	{"no-geoip",    no_argument,		NULL, 'G'},
 	{"show-src",	no_argument,		NULL, 's'},
 	{"update",	no_argument,		NULL, 'u'},
+	{"interval",    required_argument,	NULL, 't'},
 	{"version",	no_argument,		NULL, 'v'},
 	{"help",	no_argument,		NULL, 'h'},
 	{NULL, 0, NULL, 0}
@@ -212,7 +225,7 @@ static int64_t time_after_us(struct timeval *tv)
 	now.tv_sec  -= tv->tv_sec;
 	now.tv_usec -= tv->tv_usec;
 
-	return now.tv_sec * 1000000 + now.tv_usec;
+	return now.tv_sec * USEC_PER_SEC + now.tv_usec;
 }
 
 static void signal_handler(int number)
@@ -246,8 +259,10 @@ static void help(void)
 	     "  -D|--dccp              Show only DCCP flows\n"
 	     "  -I|--icmp              Show only ICMP/ICMPv6 flows\n"
 	     "  -S|--sctp              Show only SCTP flows\n"
+	     "  -n|--no-dns            Don't perform hostname lookup\n"
 	     "  -s|--show-src          Also show source, not only dest\n"
 	     "  -u|--update            Update GeoIP databases\n"
+	     "  -t|--interval <time>   Refresh time in seconds (default 1s)\n"
 	     "  -v|--version           Print version and exit\n"
 	     "  -h|--help              Print this help and exit\n\n"
 	     "Examples:\n"
@@ -281,7 +296,7 @@ static void flow_entry_calc_rate(struct flow_entry *n, const struct nf_conntrack
 	uint64_t bytes_dst = nfct_get_attr_u64(ct, ATTR_REPL_COUNTER_BYTES);
 	uint64_t pkts_src  = nfct_get_attr_u64(ct, ATTR_ORIG_COUNTER_PACKETS);
 	uint64_t pkts_dst  = nfct_get_attr_u64(ct, ATTR_REPL_COUNTER_PACKETS);
-	double sec = time_after_us(&n->last_update) / 1000000.0;
+	double sec = (double)time_after_us(&n->last_update) / USEC_PER_SEC;
 
 	if (sec <= 0)
 		return;
@@ -640,13 +655,11 @@ flow_entry_geo_city_lookup_generic(struct flow_entry *n,
 
 	build_bug_on(sizeof(n->city_src) != sizeof(n->city_dst));
 
-	if (city) {
-		memcpy(SELFLD(dir, city_src, city_dst), city,
-		       min(sizeof(n->city_src), strlen(city)));
-	} else {
-		memset(SELFLD(dir, city_src, city_dst), 0,
-		       sizeof(n->city_src));
-	}
+	if (city)
+		strlcpy(SELFLD(dir, city_src, city_dst), city,
+		        sizeof(n->city_src));
+	else
+		SELFLD(dir, city_src, city_dst)[0] = '\0';
 }
 
 static void
@@ -674,20 +687,20 @@ flow_entry_geo_country_lookup_generic(struct flow_entry *n,
 
 	build_bug_on(sizeof(n->country_src) != sizeof(n->country_dst));
 
-	if (country) {
-		memcpy(SELFLD(dir, country_src, country_dst), country,
-		       min(sizeof(n->country_src), strlen(country)));
-	} else {
-		memset(SELFLD(dir, country_src, country_dst), 0,
-		       sizeof(n->country_src));
-	}
+	if (country)
+		strlcpy(SELFLD(dir, country_src, country_dst), country,
+		        sizeof(n->country_src));
+	else
+		SELFLD(dir, country_src, country_dst)[0] = '\0';
 }
 
 static void flow_entry_get_extended_geo(struct flow_entry *n,
 					enum flow_entry_direction dir)
 {
-	flow_entry_geo_city_lookup_generic(n, dir);
-	flow_entry_geo_country_lookup_generic(n, dir);
+	if (resolve_geoip) {
+		flow_entry_geo_city_lookup_generic(n, dir);
+		flow_entry_geo_country_lookup_generic(n, dir);
+	}
 }
 
 static void flow_entry_get_extended_revdns(struct flow_entry *n,
@@ -699,12 +712,22 @@ static void flow_entry_get_extended_revdns(struct flow_entry *n,
 	struct sockaddr *sa;
 	struct hostent *hent;
 
+	build_bug_on(sizeof(n->rev_dns_src) != sizeof(n->rev_dns_dst));
+
 	switch (n->l3_proto) {
 	default:
 		bug();
 
 	case AF_INET:
 		flow_entry_get_sain4_obj(n, dir, &sa4);
+
+		if (!resolve_dns) {
+			inet_ntop(AF_INET, &sa4.sin_addr,
+				  SELFLD(dir, rev_dns_src, rev_dns_dst),
+				  sizeof(n->rev_dns_src));
+			return;
+		}
+
 		sa = (struct sockaddr *) &sa4;
 		sa_len = sizeof(sa4);
 		hent = gethostbyaddr(&sa4.sin_addr, sizeof(sa4.sin_addr), AF_INET);
@@ -712,22 +735,26 @@ static void flow_entry_get_extended_revdns(struct flow_entry *n,
 
 	case AF_INET6:
 		flow_entry_get_sain6_obj(n, dir, &sa6);
+
+		if (!resolve_dns) {
+			inet_ntop(AF_INET6, &sa6.sin6_addr,
+				  SELFLD(dir, rev_dns_src, rev_dns_dst),
+				  sizeof(n->rev_dns_src));
+			return;
+		}
+
 		sa = (struct sockaddr *) &sa6;
 		sa_len = sizeof(sa6);
 		hent = gethostbyaddr(&sa6.sin6_addr, sizeof(sa6.sin6_addr), AF_INET6);
 		break;
 	}
 
-	build_bug_on(sizeof(n->rev_dns_src) != sizeof(n->rev_dns_dst));
 	getnameinfo(sa, sa_len, SELFLD(dir, rev_dns_src, rev_dns_dst),
 		    sizeof(n->rev_dns_src), NULL, 0, NI_NUMERICHOST);
 
-	if (hent) {
-		memset(n->rev_dns_dst, 0, sizeof(n->rev_dns_dst));
-		memcpy(SELFLD(dir, rev_dns_src, rev_dns_dst),
-		       hent->h_name, min(sizeof(n->rev_dns_src),
-					 strlen(hent->h_name)));
-	}
+	if (hent)
+		strlcpy(SELFLD(dir, rev_dns_src, rev_dns_dst), hent->h_name,
+			sizeof(n->rev_dns_src));
 }
 
 static void flow_entry_get_extended(struct flow_entry *n)
@@ -781,13 +808,13 @@ static uint16_t presenter_get_port(uint16_t src, uint16_t dst, bool is_tcp)
 static char *bandw2str(double bytes, char *buf, size_t len)
 {
 	if (bytes > 1000000000.)
-		snprintf(buf, len, "%.1fG", bytes / 1000000000.);
+		snprintf(buf, len, "%.1fGB", bytes / 1000000000.);
 	else if (bytes > 1000000.)
-		snprintf(buf, len, "%.1fM", bytes / 1000000.);
+		snprintf(buf, len, "%.1fMB", bytes / 1000000.);
 	else if (bytes > 1000.)
-		snprintf(buf, len, "%.1fK", bytes / 1000.);
+		snprintf(buf, len, "%.1fkB", bytes / 1000.);
 	else
-		snprintf(buf, len, "%g", bytes);
+		snprintf(buf, len, "%g bytes", bytes);
 
 	return buf;
 }
@@ -795,11 +822,11 @@ static char *bandw2str(double bytes, char *buf, size_t len)
 static char *rate2str(double rate, char *buf, size_t len)
 {
 	if (rate > 1000000000.)
-		snprintf(buf, len, "%.1fGb/s", rate / 1000000000.);
+		snprintf(buf, len, "%.1fGB/s", rate / 1000000000.);
 	else if (rate > 1000000.)
-		snprintf(buf, len, "%.1fMb/s", rate / 1000000.);
+		snprintf(buf, len, "%.1fMB/s", rate / 1000000.);
 	else if (rate > 1000.)
-		snprintf(buf, len, "%.1fKb/s", rate / 1000.);
+		snprintf(buf, len, "%.1fkB/s", rate / 1000.);
 	else
 		snprintf(buf, len, "%gB/s", rate);
 
@@ -818,7 +845,7 @@ static void presenter_print_counters(uint64_t bytes, uint64_t pkts,
 	if (rate_pkts)
 		printw("(%.1fpps)", rate_pkts);
 
-	printw(", %s bytes", bandw2str(bytes, bytes_str, sizeof(bytes_str) - 1));
+	printw(", %s", bandw2str(bytes, bytes_str, sizeof(bytes_str) - 1));
 	if (rate_bytes)
 		printw("(%s)", rate2str(rate_bytes, bytes_str,
 			sizeof(bytes_str) - 1));
@@ -1083,7 +1110,7 @@ static void presenter_screen_update(WINDOW *screen, struct flow_list *fl,
 		presenter_screen_do_line(screen, n, &line);
 
 		line++;
-		maxy -= (2 + 1 * show_src);
+		maxy -= (2 + (show_src ? 1 : 0));
 	}
 
 	mvwprintw(screen, 1, 2,
@@ -1444,7 +1471,7 @@ static void *collector(void *null __maybe_unused)
 	while (!sigint) {
 		int status;
 
-		usleep(1000000);
+		usleep(USEC_PER_SEC * interval);
 
 		collector_refresh_flows(ct_update);
 
@@ -1504,11 +1531,20 @@ int main(int argc, char **argv)
 			what_cmd |= INCLUDE_SCTP;
 			break;
 		case 's':
-			show_src = 1;
+			show_src = true;
 			break;
 		case 'u':
 			update_geoip();
 			die();
+			break;
+		case 't':
+			interval = strtoul(optarg, NULL, 10);
+			break;
+		case 'n':
+			resolve_dns = false;
+			break;
+		case 'G':
+			resolve_geoip = false;
 			break;
 		case 'h':
 			help();
@@ -1540,7 +1576,8 @@ int main(int argc, char **argv)
 	conntrack_acct_enable();
 	conntrack_tstamp_enable();
 
-	init_geoip(1);
+	if (resolve_geoip)
+		init_geoip(1);
 
 	ret = pthread_create(&tid, NULL, collector, NULL);
 	if (ret < 0)
@@ -1548,7 +1585,8 @@ int main(int argc, char **argv)
 
 	presenter();
 
-	destroy_geoip();
+	if (resolve_geoip)
+		destroy_geoip();
 
 	restore_sysctl(&sysctl);
 
