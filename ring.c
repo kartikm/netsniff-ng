@@ -1,6 +1,7 @@
 /*
  * netsniff-ng - the packet sniffing beast
  * Copyright 2009, 2010 Daniel Borkmann.
+ * Copyright 2014, 2015 Tobias Klauser
  * Subject to the GPL, version 2.
  */
 
@@ -19,6 +20,23 @@
 #include "ring.h"
 #include "built_in.h"
 
+void setup_ring_layout_generic(int sock, struct ring *ring, size_t size,
+			       bool jumbo_support)
+{
+	fmemset(&ring->layout, 0, sizeof(ring->layout));
+
+	ring->layout.tp_block_size = (jumbo_support ?
+				      RUNTIME_PAGE_SIZE << 4 :
+				      RUNTIME_PAGE_SIZE << 2);
+
+	ring->layout.tp_frame_size = (jumbo_support ?
+				      TPACKET_ALIGNMENT << 12 :
+				      TPACKET_ALIGNMENT << 7);
+
+	ring->layout.tp_block_nr = size / ring->layout.tp_block_size;
+	ring->layout.tp_frame_nr = size / ring->layout.tp_frame_size;
+}
+
 void mmap_ring_generic(int sock, struct ring *ring)
 {
 	ring->mm_space = mmap(NULL, ring->mm_len, PROT_READ | PROT_WRITE,
@@ -27,10 +45,9 @@ void mmap_ring_generic(int sock, struct ring *ring)
 		panic("Cannot mmap {TX,RX}_RING!\n");
 }
 
-void alloc_ring_frames_generic(struct ring *ring, int num, size_t size)
+void alloc_ring_frames_generic(struct ring *ring, size_t num, size_t size)
 {
-	int i;
-	size_t len = num * sizeof(*ring->frames);
+	size_t i, len = num * sizeof(*ring->frames);
 
 	ring->frames = xmalloc_aligned(len, CO_CACHE_LINE_SIZE);
 	fmemset(ring->frames, 0, len);
@@ -44,6 +61,7 @@ void alloc_ring_frames_generic(struct ring *ring, int num, size_t size)
 void bind_ring_generic(int sock, struct ring *ring, int ifindex, bool tx_only)
 {
 	int ret;
+
 	/* The {TX,RX}_RING registers itself to the networking stack with
 	 * dev_add_pack(), so we have one single RX_RING for all devs
 	 * otherwise you'll get the packet twice.
@@ -51,14 +69,8 @@ void bind_ring_generic(int sock, struct ring *ring, int ifindex, bool tx_only)
 	fmemset(&ring->s_ll, 0, sizeof(ring->s_ll));
 
 	ring->s_ll.sll_family = AF_PACKET;
-	if (tx_only)
-		ring->s_ll.sll_protocol = 0;
-	else
-		ring->s_ll.sll_protocol = htons(ETH_P_ALL);
 	ring->s_ll.sll_ifindex = ifindex;
-	ring->s_ll.sll_hatype = 0;
-	ring->s_ll.sll_halen = 0;
-	ring->s_ll.sll_pkttype = 0;
+	ring->s_ll.sll_protocol = tx_only ? 0 : htons(ETH_P_ALL);
 
 	ret = bind(sock, (struct sockaddr *) &ring->s_ll, sizeof(ring->s_ll));
 	if (ret < 0)
