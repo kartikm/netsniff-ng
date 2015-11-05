@@ -82,6 +82,11 @@ struct flow_list {
 	struct spinlock lock;
 };
 
+enum flow_direction {
+	FLOW_DIR_SRC,
+	FLOW_DIR_DST,
+};
+
 #ifndef ATTR_TIMESTAMP_START
 # define ATTR_TIMESTAMP_START 63
 #endif
@@ -227,7 +232,7 @@ static int64_t time_after_us(struct timeval *tv)
 {
 	struct timeval now;
 
-	gettimeofday(&now, NULL);
+	bug_on(gettimeofday(&now, NULL));
 
 	now.tv_sec  -= tv->tv_sec;
 	now.tv_usec -= tv->tv_usec;
@@ -296,7 +301,7 @@ static void version(void)
 
 static void flow_entry_update_time(struct flow_entry *n)
 {
-	gettimeofday(&n->last_update, NULL);
+	bug_on(gettimeofday(&n->last_update, NULL));
 }
 
 static void flow_entry_calc_rate(struct flow_entry *n, const struct nf_conntrack *ct)
@@ -611,16 +616,11 @@ static void flow_entry_from_ct(struct flow_entry *n, const struct nf_conntrack *
 	n->ip4_dst_addr = ntohl(n->ip4_dst_addr);
 }
 
-enum flow_entry_direction {
-	flow_entry_src,
-	flow_entry_dst,
-};
-
 #define SELFLD(dir,src_member,dst_member)	\
-	(((dir) == flow_entry_src) ? n->src_member : n->dst_member)
+	(((dir) == FLOW_DIR_SRC) ? n->src_member : n->dst_member)
 
 static void flow_entry_get_sain4_obj(const struct flow_entry *n,
-				     enum flow_entry_direction dir,
+				     enum flow_direction dir,
 				     struct sockaddr_in *sa)
 {
 	memset(sa, 0, sizeof(*sa));
@@ -629,7 +629,7 @@ static void flow_entry_get_sain4_obj(const struct flow_entry *n,
 }
 
 static void flow_entry_get_sain6_obj(const struct flow_entry *n,
-				     enum flow_entry_direction dir,
+				     enum flow_direction dir,
 				     struct sockaddr_in6 *sa)
 {
 	memset(sa, 0, sizeof(*sa));
@@ -641,7 +641,7 @@ static void flow_entry_get_sain6_obj(const struct flow_entry *n,
 
 static void
 flow_entry_geo_city_lookup_generic(struct flow_entry *n,
-				   enum flow_entry_direction dir)
+				   enum flow_direction dir)
 {
 	struct sockaddr_in sa4;
 	struct sockaddr_in6 sa6;
@@ -673,7 +673,7 @@ flow_entry_geo_city_lookup_generic(struct flow_entry *n,
 
 static void
 flow_entry_geo_country_lookup_generic(struct flow_entry *n,
-				      enum flow_entry_direction dir)
+				      enum flow_direction dir)
 {
 	struct sockaddr_in sa4;
 	struct sockaddr_in6 sa6;
@@ -704,7 +704,7 @@ flow_entry_geo_country_lookup_generic(struct flow_entry *n,
 }
 
 static void flow_entry_get_extended_geo(struct flow_entry *n,
-					enum flow_entry_direction dir)
+					enum flow_direction dir)
 {
 	if (resolve_geoip) {
 		flow_entry_geo_city_lookup_generic(n, dir);
@@ -713,7 +713,7 @@ static void flow_entry_get_extended_geo(struct flow_entry *n,
 }
 
 static void flow_entry_get_extended_revdns(struct flow_entry *n,
-					   enum flow_entry_direction dir)
+					   enum flow_direction dir)
 {
 	size_t sa_len;
 	struct sockaddr_in sa4;
@@ -772,12 +772,12 @@ static void flow_entry_get_extended(struct flow_entry *n)
 		return;
 
 	if (show_src) {
-		flow_entry_get_extended_revdns(n, flow_entry_src);
-		flow_entry_get_extended_geo(n, flow_entry_src);
+		flow_entry_get_extended_revdns(n, FLOW_DIR_SRC);
+		flow_entry_get_extended_geo(n, FLOW_DIR_SRC);
 	}
 
-	flow_entry_get_extended_revdns(n, flow_entry_dst);
-	flow_entry_get_extended_geo(n, flow_entry_dst);
+	flow_entry_get_extended_revdns(n, FLOW_DIR_DST);
+	flow_entry_get_extended_geo(n, FLOW_DIR_DST);
 
 	/* Lookup application */
 	n->inode = get_port_inode(n->port_src, n->l4_proto,
@@ -859,13 +859,19 @@ static void presenter_print_counters(uint64_t bytes, uint64_t pkts,
 	printw(" -> (");
 	attron(COLOR_PAIR(color));
 	printw("%"PRIu64" pkts", pkts);
-	if (rate_pkts)
+	if (rate_pkts) {
+		attron(COLOR_PAIR(3));
 		printw("(%.1fpps)", rate_pkts);
+		attron(COLOR_PAIR(color));
+	}
 
 	printw(", %s", bandw2str(bytes, bytes_str, sizeof(bytes_str) - 1));
-	if (rate_bytes)
+	if (rate_bytes) {
+		attron(COLOR_PAIR(3));
 		printw("(%s)", rate2str(rate_bytes, bytes_str,
 			sizeof(bytes_str) - 1));
+		attron(COLOR_PAIR(color));
+	}
 	attroff(COLOR_PAIR(color));
 	printw(")");
 }
