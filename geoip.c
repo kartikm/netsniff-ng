@@ -150,6 +150,9 @@ static void geoip_inflate(int which)
 	while ((ret = gzread(fpi, raw, sizeof(raw))) && ret2)
 		ret2 = fwrite(raw, ret, 1, fpo);
 
+	if (!gzeof(fpi))
+		panic("Error in gzread: %s\n", gzerror(fpi, &ret));
+
 	gzclose(fpi);
 	fclose(fpo);
 }
@@ -162,8 +165,8 @@ static int geoip_get_database(const char *host, int which)
 	size_t lenl = strlen("Content-Length: ");
 	size_t lent = strlen("HTTP/1.1 200 OK");
 	size_t lenc = strlen("\r\n\r\n");
-	const char *http_req_fmt = "GET %s%s HTTP/1.1\n"
-				   "Connection: close\n"
+	const char *http_req_fmt = "GET %s%s HTTP/1.1\r\n"
+				   "Connection: close\r\n"
 				   "Host: %s\r\n\r\n";
 again:
 	found = good = 0;
@@ -194,8 +197,6 @@ again:
 		close(sock);
 		return -EIO;
 	}
-
-	raw[sizeof(raw) - 1] = 0;
 
 	for (i = 0; i < ret; i++) {
 		if (!strncmp(raw + i, "Content-Length: ", min_t(size_t, ret - i, lenl))) {
