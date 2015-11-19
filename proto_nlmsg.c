@@ -40,9 +40,50 @@
 #define NDA_PAYLOAD(n)	NLMSG_PAYLOAD(n,sizeof(struct ndmsg))
 #endif
 
-#define attr_fmt(attr, fmt, ...) \
+#ifndef NLA_LENGTH
+#define NLA_LENGTH(len)	(NLA_ALIGN(sizeof(struct nlattr)) + (len))
+#endif
+
+#ifndef NLA_DATA
+#define NLA_DATA(nla)   ((void*)(((char*)(nla)) + NLA_LENGTH(0)))
+#endif
+
+#ifndef NLA_PAYLOAD
+#define NLA_PAYLOAD(nla) ((int)((nla)->nla_len) - NLA_LENGTH(0))
+#endif
+
+#define NLA_LEN(attr) ((int)NLA_PAYLOAD(attr))
+#define NLA_INT(attr) (*(int *)NLA_DATA(attr))
+#define NLA_UINT(attr) (*(unsigned int *)NLA_DATA(attr))
+#define NLA_UINT8(attr) (*(uint8_t *)NLA_DATA(attr))
+#define NLA_UINT16(attr) (*(uint16_t *)NLA_DATA(attr))
+#define NLA_UINT32(attr) (*(uint32_t *)NLA_DATA(attr))
+#define NLA_STR(attr) ((char *)NLA_DATA(attr))
+
+#ifndef GEN_NLA
+#define GEN_NLA(n) ((struct nlattr*)(((char*)(n)) + GENL_HDRLEN))
+#endif
+
+#ifndef NLA_OK
+#define NLA_OK(nla,len)                            \
+	((len) >= (int)sizeof(struct nlattr) &&    \
+	(nla)->nla_len >= sizeof(struct nlattr) && \
+	(nla)->nla_len <= (len))
+#endif
+
+#ifndef NLA_NEXT
+#define NLA_NEXT(nla,attrlen)                    \
+	((attrlen) -= NLA_ALIGN((nla)->nla_len), \
+	(struct nlattr*)(((char*)(nla)) + NLA_ALIGN((nla)->nla_len)))
+#endif
+
+#define rta_fmt(attr, fmt, ...) \
 	tprintf("\tA: "fmt, ##__VA_ARGS__); \
 	tprintf(", Len %d\n", RTA_LEN(attr));
+
+#define nla_fmt(attr, fmt, ...) \
+	tprintf("\tA: "fmt, ##__VA_ARGS__); \
+	tprintf(", Len %d\n", NLA_LEN(attr));
 
 struct flag_name {
 	const char *name;
@@ -68,6 +109,16 @@ static const char *flags2str(struct flag_name *tbl, unsigned int flags,
 	}
 
 	return buf;
+}
+
+static void nlmsg_print_raw(struct nlmsghdr *hdr)
+{
+	u32 len = hdr->nlmsg_len;
+
+	if (len) {
+		_ascii((uint8_t *) hdr + NLMSG_HDRLEN, len - NLMSG_HDRLEN);
+		_hex((uint8_t *) hdr + NLMSG_HDRLEN, len - NLMSG_HDRLEN);
+	}
 }
 
 static const char *nlmsg_family2str(uint16_t family)
@@ -176,14 +227,27 @@ static const char *nlmsg_rtnl_type2str(uint16_t type)
 	}
 }
 
+static const char *nlmsg_genl_type2str(uint16_t type)
+{
+	switch (type) {
+	case GENL_ID_GENERATE:	return "id gen";
+	case GENL_ID_CTRL:	return "id ctrl";
+	default:		return NULL;
+	}
+}
+
 static char *nlmsg_type2str(uint16_t proto, uint16_t type, char *buf, int len)
 {
-	if (proto == NETLINK_ROUTE && type < RTM_MAX) {
-		const char *name = nlmsg_rtnl_type2str(type);
-		if (name) {
-			strncpy(buf, name, len);
-			return buf;
-		}
+	const char *name = NULL;
+
+	if (proto == NETLINK_ROUTE && type < RTM_MAX)
+		name = nlmsg_rtnl_type2str(type);
+	else if (proto == NETLINK_GENERIC)
+		name = nlmsg_genl_type2str(type);
+
+	if (name) {
+		strncpy(buf, name, len);
+		return buf;
 	}
 
 	return nl_nlmsgtype2str(type, buf, len);
@@ -229,6 +293,9 @@ static void rtnl_print_ifinfo(struct nlmsghdr *hdr)
 	char if_addr[64] = {};
 	char *af_link = "unknown";
 
+	if (hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ifi)))
+		return;
+
 	if (ifi->ifi_family == AF_UNSPEC)
 		af_link = "unspec";
 	else if (ifi->ifi_family == AF_BRIDGE)
@@ -255,37 +322,37 @@ static void rtnl_print_ifinfo(struct nlmsghdr *hdr)
 	for (; RTA_OK(attr, attrs_len); attr = RTA_NEXT(attr, attrs_len)) {
 		switch (attr->rta_type) {
 		case IFLA_ADDRESS:
-			attr_fmt(attr, "Address %s",
+			rta_fmt(attr, "Address %s",
 					device_addr2str(RTA_DATA(attr),
 						RTA_LEN(attr), ifi->ifi_type,
 						if_addr, sizeof(if_addr)));
 			break;
 		case IFLA_BROADCAST:
-			attr_fmt(attr, "Broadcast %s",
+			rta_fmt(attr, "Broadcast %s",
 					device_addr2str(RTA_DATA(attr),
 						RTA_LEN(attr), ifi->ifi_type,
 						if_addr, sizeof(if_addr)));
 			break;
 		case IFLA_IFNAME:
-			attr_fmt(attr, "Name %s%s%s",
+			rta_fmt(attr, "Name %s%s%s",
 					colorize_start(bold), RTA_STR(attr),
 					colorize_end());
 			break;
 		case IFLA_MTU:
-			attr_fmt(attr, "MTU %d", RTA_INT(attr));
+			rta_fmt(attr, "MTU %d", RTA_INT(attr));
 			break;
 		case IFLA_LINK:
-			attr_fmt(attr, "Link %d", RTA_INT(attr));
+			rta_fmt(attr, "Link %d", RTA_INT(attr));
 			break;
 		case IFLA_QDISC:
-			attr_fmt(attr, "QDisc %s", RTA_STR(attr));
+			rta_fmt(attr, "QDisc %s", RTA_STR(attr));
 			break;
 		case IFLA_OPERSTATE:
 			{
 				uint8_t st = RTA_UINT8(attr);
 				char states[256];
 
-				attr_fmt(attr, "Operation state 0x%x (%s%s%s)",
+				rta_fmt(attr, "Operation state 0x%x (%s%s%s)",
 						st,
 						colorize_start(bold),
 						rtnl_link_operstate2str(st,
@@ -298,7 +365,7 @@ static void rtnl_print_ifinfo(struct nlmsghdr *hdr)
 				uint8_t mode = RTA_UINT8(attr);
 				char str[32];
 
-				attr_fmt(attr, "Mode 0x%x (%s%s%s)", mode,
+				rta_fmt(attr, "Mode 0x%x (%s%s%s)", mode,
 						colorize_start(bold),
 						rtnl_link_mode2str(mode, str,
 							sizeof(str)),
@@ -306,18 +373,20 @@ static void rtnl_print_ifinfo(struct nlmsghdr *hdr)
 			}
 			break;
 		case IFLA_GROUP:
-			attr_fmt(attr, "Group %d", RTA_INT(attr));
+			rta_fmt(attr, "Group %d", RTA_INT(attr));
 			break;
 		case IFLA_TXQLEN:
-			attr_fmt(attr, "Tx queue len %d", RTA_INT(attr));
+			rta_fmt(attr, "Tx queue len %d", RTA_INT(attr));
 			break;
 		case IFLA_NET_NS_PID:
-			attr_fmt(attr, "Network namespace pid %d",
+			rta_fmt(attr, "Network namespace pid %d",
 					RTA_INT(attr));
 			break;
 		case IFLA_NET_NS_FD:
-			attr_fmt(attr, "Network namespace fd %d",
-					RTA_INT(attr));
+			rta_fmt(attr, "Network namespace fd %d", RTA_INT(attr));
+			break;
+		default:
+			rta_fmt(attr, "0x%x", attr->rta_type);
 			break;
 		}
 	}
@@ -331,6 +400,9 @@ static void rtnl_print_ifaddr(struct nlmsghdr *hdr)
 	struct ifa_cacheinfo *ci;
 	char addr_str[256];
 	char flags[256];
+
+	if (hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ifa)))
+		return;
 
 	tprintf(" [ Address Family %d (%s%s%s)", ifa->ifa_family,
 			colorize_start(bold),
@@ -351,32 +423,32 @@ static void rtnl_print_ifaddr(struct nlmsghdr *hdr)
 	for (; RTA_OK(attr, attrs_len); attr = RTA_NEXT(attr, attrs_len)) {
 		switch (attr->rta_type) {
 		case IFA_LOCAL:
-			attr_fmt(attr, "Local %s", addr2str(ifa->ifa_family,
+			rta_fmt(attr, "Local %s", addr2str(ifa->ifa_family,
 				RTA_DATA(attr), addr_str, sizeof(addr_str)));
 			break;
 		case IFA_ADDRESS:
-			attr_fmt(attr, "Address %s", addr2str(ifa->ifa_family,
+			rta_fmt(attr, "Address %s", addr2str(ifa->ifa_family,
 				RTA_DATA(attr), addr_str, sizeof(addr_str)));
 			break;
 		case IFA_BROADCAST:
-			attr_fmt(attr, "Broadcast %s",
+			rta_fmt(attr, "Broadcast %s",
 					addr2str(ifa->ifa_family,
 						RTA_DATA(attr), addr_str,
 						sizeof(addr_str)));
 			break;
 		case IFA_MULTICAST:
-			attr_fmt(attr, "Multicast %s",
+			rta_fmt(attr, "Multicast %s",
 					addr2str(ifa->ifa_family,
 						RTA_DATA(attr), addr_str,
 						sizeof(addr_str)));
 			break;
 		case IFA_ANYCAST:
-			attr_fmt(attr, "Anycast %s", addr2str(ifa->ifa_family,
+			rta_fmt(attr, "Anycast %s", addr2str(ifa->ifa_family,
 				RTA_DATA(attr), addr_str, sizeof(addr_str)));
 			break;
 #ifdef IFA_FLAGS
 		case IFA_FLAGS:
-			attr_fmt(attr, "Flags %d (%s%s%s)", RTA_INT(attr),
+			rta_fmt(attr, "Flags %d (%s%s%s)", RTA_INT(attr),
 				colorize_start(bold),
 				rtnl_addr_flags2str(RTA_INT(attr),
 					flags, sizeof(flags)),
@@ -384,7 +456,7 @@ static void rtnl_print_ifaddr(struct nlmsghdr *hdr)
 			break;
 #endif
 		case IFA_LABEL:
-			attr_fmt(attr, "Label %s", RTA_STR(attr));
+			rta_fmt(attr, "Label %s", RTA_STR(attr));
 			break;
 		case IFA_CACHEINFO:
 			ci = RTA_DATA(attr);
@@ -403,6 +475,9 @@ static void rtnl_print_ifaddr(struct nlmsghdr *hdr)
 			tprintf(", created on(%.2fs)", (double)ci->cstamp / 100);
 			tprintf(", updated on(%.2fs))", (double)ci->cstamp / 100);
 			tprintf(", Len %d\n", RTA_LEN(attr));
+			break;
+		default:
+			rta_fmt(attr, "0x%x", attr->rta_type);
 			break;
 		}
 	}
@@ -461,7 +536,6 @@ static const char *route_type2str(uint8_t type)
 	case RTN_THROW: return "throw";
 	case RTN_NAT: return "nat";
 	case RTN_XRESOLVE: return "xresolve";
-
 	default: return "Unknown";
 	}
 }
@@ -486,6 +560,9 @@ static void rtnl_print_route(struct nlmsghdr *hdr)
 	int hz = get_user_hz();
 	char addr_str[256];
 	char flags[256];
+
+	if (hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*rtm)))
+		return;
 
 	tprintf(" [ Route Family %d (%s%s%s)", rtm->rtm_family,
 			colorize_start(bold),
@@ -519,38 +596,38 @@ static void rtnl_print_route(struct nlmsghdr *hdr)
 	for (; RTA_OK(attr, attrs_len); attr = RTA_NEXT(attr, attrs_len)) {
 		switch (attr->rta_type) {
 		case RTA_DST:
-			attr_fmt(attr, "Dst %s", addr2str(rtm->rtm_family,
+			rta_fmt(attr, "Dst %s", addr2str(rtm->rtm_family,
 				RTA_DATA(attr), addr_str, sizeof(addr_str)));
 			break;
 		case RTA_SRC:
-			attr_fmt(attr, "Src %s", addr2str(rtm->rtm_family,
+			rta_fmt(attr, "Src %s", addr2str(rtm->rtm_family,
 				RTA_DATA(attr), addr_str, sizeof(addr_str)));
 			break;
 		case RTA_IIF:
-			attr_fmt(attr, "Iif %d", RTA_INT(attr));
+			rta_fmt(attr, "Iif %d", RTA_INT(attr));
 			break;
 		case RTA_OIF:
-			attr_fmt(attr, "Oif %d", RTA_INT(attr));
+			rta_fmt(attr, "Oif %d", RTA_INT(attr));
 			break;
 		case RTA_GATEWAY:
-			attr_fmt(attr, "Gateway %s", addr2str(rtm->rtm_family,
+			rta_fmt(attr, "Gateway %s", addr2str(rtm->rtm_family,
 				RTA_DATA(attr), addr_str, sizeof(addr_str)));
 			break;
 		case RTA_PRIORITY:
-			attr_fmt(attr, "Priority %u", RTA_UINT32(attr));
+			rta_fmt(attr, "Priority %u", RTA_UINT32(attr));
 			break;
 		case RTA_PREFSRC:
-			attr_fmt(attr, "Pref Src %s", addr2str(rtm->rtm_family,
+			rta_fmt(attr, "Pref Src %s", addr2str(rtm->rtm_family,
 				RTA_DATA(attr), addr_str, sizeof(addr_str)));
 			break;
 		case RTA_MARK:
-			attr_fmt(attr, "Mark 0x%x", RTA_UINT(attr));
+			rta_fmt(attr, "Mark 0x%x", RTA_UINT(attr));
 			break;
 		case RTA_FLOW:
-			attr_fmt(attr, "Flow 0x%x", RTA_UINT(attr));
+			rta_fmt(attr, "Flow 0x%x", RTA_UINT(attr));
 			break;
 		case RTA_TABLE:
-			attr_fmt(attr, "Table %d (%s%s%s)", RTA_UINT32(attr),
+			rta_fmt(attr, "Table %d (%s%s%s)", RTA_UINT32(attr),
 				colorize_start(bold),
 				route_table2str(RTA_UINT32(attr)),
 				colorize_end());
@@ -567,6 +644,9 @@ static void rtnl_print_route(struct nlmsghdr *hdr)
 			tprintf(", ts(%d)", ci->rta_ts);
 			tprintf(", ts age(%ds))", ci->rta_tsage);
 			tprintf(", Len %d\n", RTA_LEN(attr));
+			break;
+		default:
+			rta_fmt(attr, "0x%x", attr->rta_type);
 			break;
 		}
 	}
@@ -627,6 +707,9 @@ static void rtnl_print_neigh(struct nlmsghdr *hdr)
 	char states[256];
 	char flags[256];
 
+	if (hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ndm)))
+		return;
+
 	tprintf(" [ Neigh Family %d (%s%s%s)", ndm->ndm_family,
 			colorize_start(bold),
 			addr_family2str(ndm->ndm_family),
@@ -651,18 +734,18 @@ static void rtnl_print_neigh(struct nlmsghdr *hdr)
 	for (; RTA_OK(attr, attrs_len); attr = RTA_NEXT(attr, attrs_len)) {
 		switch (attr->rta_type) {
 		case NDA_DST:
-			attr_fmt(attr, "Address %s", addr2str(ndm->ndm_family,
+			rta_fmt(attr, "Address %s", addr2str(ndm->ndm_family,
 						RTA_DATA(attr), addr_str,
 						sizeof(addr_str)));
 			break;
 		case NDA_LLADDR:
-			attr_fmt(attr, "HW Address %s",
+			rta_fmt(attr, "HW Address %s",
 					device_addr2str(RTA_DATA(attr),
 						RTA_LEN(attr), 0, hw_addr,
 						sizeof(hw_addr)));
 			break;
 		case NDA_PROBES:
-			attr_fmt(attr, "Probes %d", RTA_UINT32(attr));
+			rta_fmt(attr, "Probes %d", RTA_UINT32(attr));
 			break;
 		case NDA_CACHEINFO:
 			ci = RTA_DATA(attr);
@@ -672,6 +755,9 @@ static void rtnl_print_neigh(struct nlmsghdr *hdr)
 			tprintf(", updated(%ds)", ci->ndm_updated / hz);
 			tprintf(", refcnt(%d))", ci->ndm_refcnt);
 			tprintf(", Len %d\n", RTA_LEN(attr));
+			break;
+		default:
+			rta_fmt(attr, "0x%x", attr->rta_type);
 			break;
 		}
 	}
@@ -704,14 +790,89 @@ static void rtnl_msg_print(struct nlmsghdr *hdr)
 	}
 }
 
-static void nlmsg_print_raw(struct nlmsghdr *hdr)
+static const char *genl_cmd2str(uint8_t table)
 {
-	u32 len = hdr->nlmsg_len;
+	switch (table) {
+	case CTRL_CMD_UNSPEC: return "unspec";
+	case CTRL_CMD_NEWFAMILY: return "new family";
+	case CTRL_CMD_DELFAMILY: return "del family";
+	case CTRL_CMD_GETFAMILY: return "get family";
+	case CTRL_CMD_NEWOPS: return "new ops";
+	case CTRL_CMD_DELOPS: return "del ops";
+	case CTRL_CMD_GETOPS: return "get ops";
+	case CTRL_CMD_NEWMCAST_GRP: return "new mcast group";
+	case CTRL_CMD_DELMCAST_GRP: return "del mcast group";
+	case CTRL_CMD_GETMCAST_GRP: return "get mcast group";
 
-	if (len) {
-		_ascii((uint8_t *) hdr + NLMSG_HDRLEN, len - NLMSG_HDRLEN);
-		_hex((uint8_t *) hdr + NLMSG_HDRLEN, len - NLMSG_HDRLEN);
+	default: return "Unknown";
 	}
+}
+
+static void genl_print_ctrl_family(struct nlmsghdr *hdr)
+{
+	struct genlmsghdr *genl = NLMSG_DATA(hdr);
+	struct nlattr *attr = GEN_NLA(genl);
+	uint32_t attrs_len = NLMSG_PAYLOAD(hdr, sizeof(struct genlmsghdr));
+
+	for (; NLA_OK(attr, attrs_len); attr = NLA_NEXT(attr, attrs_len)) {
+		switch (attr->nla_type) {
+		case CTRL_ATTR_FAMILY_ID:
+			nla_fmt(attr, "Family Id 0x%x", NLA_UINT16(attr));
+			break;
+
+		case CTRL_ATTR_FAMILY_NAME:
+			nla_fmt(attr, "Family Name %s", NLA_STR(attr));
+			break;
+
+		case CTRL_ATTR_VERSION:
+			nla_fmt(attr, "Version %u", NLA_UINT32(attr));
+			break;
+
+		case CTRL_ATTR_HDRSIZE:
+			nla_fmt(attr, "Header size %u", NLA_UINT32(attr));
+			break;
+
+		case CTRL_ATTR_MAXATTR:
+			nla_fmt(attr, "Max attr value 0x%x", NLA_UINT32(attr));
+			break;
+
+		default:
+			nla_fmt(attr, "0x%x", attr->nla_type);
+			break;
+		}
+	}
+}
+
+static void genl_print_ctrl(struct nlmsghdr *hdr)
+{
+	struct genlmsghdr *genl = NLMSG_DATA(hdr);
+
+	switch (genl->cmd) {
+	case CTRL_CMD_NEWFAMILY:
+	case CTRL_CMD_DELFAMILY:
+	case CTRL_CMD_GETFAMILY:
+		genl_print_ctrl_family(hdr);
+	}
+}
+
+static void genl_msg_print(struct nlmsghdr *hdr)
+{
+	struct genlmsghdr *genl;
+
+	if (hdr->nlmsg_type != GENL_ID_CTRL) {
+		nlmsg_print_raw(hdr);
+		return;
+	}
+
+	genl = NLMSG_DATA(hdr);
+
+	tprintf(" [ Cmd %u (%s%s%s)", genl->cmd,
+		colorize_start(bold), genl_cmd2str(genl->cmd), colorize_end());
+	tprintf(", Version %u", genl->version);
+	tprintf(", Reserved %u", genl->reserved);
+	tprintf(" ]\n");
+
+	genl_print_ctrl(hdr);
 }
 
 static void nlmsg_print(uint16_t family, struct nlmsghdr *hdr)
@@ -755,10 +916,16 @@ static void nlmsg_print(uint16_t family, struct nlmsghdr *hdr)
 			colorize_end());
 	tprintf(" ]\n");
 
-	if (family == NETLINK_ROUTE)
+	switch (family) {
+	case NETLINK_ROUTE:
 		rtnl_msg_print(hdr);
-	else
+		break;
+	case NETLINK_GENERIC:
+		genl_msg_print(hdr);
+		break;
+	default:
 		nlmsg_print_raw(hdr);
+	}
 }
 
 static void nlmsg(struct pkt_buff *pkt)

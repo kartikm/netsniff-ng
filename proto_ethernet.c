@@ -14,7 +14,6 @@
 #include "dissector_eth.h"
 #include "lookup.h"
 #include "pkt_buff.h"
-#include "oui.h"
 
 static inline bool is_multicast_ether_addr(const uint8_t *mac)
 {
@@ -41,7 +40,7 @@ static const char *ether_lookup_addr(const uint8_t *mac)
 
 static void ethernet(struct pkt_buff *pkt)
 {
-	char *type;
+	const char *type;
 	uint8_t *src_mac, *dst_mac;
 	struct ethhdr *eth = (struct ethhdr *) pkt_pull(pkt, sizeof(*eth));
 
