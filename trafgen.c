@@ -55,6 +55,28 @@
 #include "ring_tx.h"
 #include "csum.h"
 
+#ifndef timeval_to_timespec
+#define timeval_to_timespec(tv, ts) {         \
+	(ts)->tv_sec = (tv)->tv_sec;          \
+	(ts)->tv_nsec = (tv)->tv_usec * 1000; \
+}
+#endif
+
+enum shaper_type {
+	SHAPER_NONE,
+	SHAPER_PKTS,
+	SHAPER_BYTES,
+};
+
+struct shaper {
+	enum shaper_type type;
+	unsigned long long sent;
+	unsigned long long rate;
+	struct timeval start;
+	struct timeval end;
+	struct timespec delay;
+};
+
 struct ctx {
 	bool rand, rfraw, jumbo_support, verbose, smoke_test, enforce, qdisc_path;
 	size_t reserve_size;
@@ -62,8 +84,8 @@ struct ctx {
 	unsigned int cpus;
 	uid_t uid; gid_t gid;
 	char *device, *device_trans, *rhost;
-	struct timespec gap;
 	struct sockaddr_in dest;
+	struct shaper sh;
 	char *packet_str;
 };
 
@@ -83,7 +105,7 @@ size_t plen = 0;
 struct packet_dyn *packet_dyn = NULL;
 size_t dlen = 0;
 
-static const char *short_options = "d:c:n:t:vJhS:rk:i:o:VRs:P:eE:pu:g:CHQqD:";
+static const char *short_options = "d:c:n:t:vJhS:rk:i:o:VRs:P:eE:pu:g:CHQqD:b:";
 static const struct option long_options[] = {
 	{"dev",			required_argument,	NULL, 'd'},
 	{"out",			required_argument,	NULL, 'o'},
@@ -91,6 +113,7 @@ static const struct option long_options[] = {
 	{"conf",		required_argument,	NULL, 'c'},
 	{"num",			required_argument,	NULL, 'n'},
 	{"gap",			required_argument,	NULL, 't'},
+	{"rate",		required_argument,	NULL, 'b'},
 	{"cpus",		required_argument,	NULL, 'P'},
 	{"ring-size",		required_argument,	NULL, 'S'},
 	{"kernel-pull",		required_argument,	NULL, 'k'},
@@ -172,6 +195,7 @@ static void __noreturn help(void)
 	     "  -r|--rand                      Randomize packet selection (def: round robin)\n"
 	     "  -P|--cpus <uint>               Specify number of forks(<= CPUs) (def: #CPUs)\n"
 	     "  -t|--gap <time>                Set approx. interpacket gap (s/ms/us/ns, def: us)\n"
+	     "  -b|--rate <rate>               Send traffic at specified rate (pps/B/kB/MB/GB/kbit/Mbit/Gbit/KiB/MiB/GiB)\n"
 	     "  -S|--ring-size <size>          Manually set mmap size (KiB/MiB/GiB)\n"
 	     "  -E|--seed <uint>               Manually set srand(3) seed\n"
 	     "  -u|--user <userid>             Drop privileges and change to userid\n"
@@ -535,6 +559,64 @@ static int xmit_smoke_probe(int icmp_sock, struct ctx *ctx)
 	return -1;
 }
 
+static bool shaper_is_set(struct shaper *sh)
+{
+	if ((sh->delay.tv_sec | sh->delay.tv_nsec) > 0)
+		return true;
+
+	return sh->type != SHAPER_NONE;
+}
+
+static void shaper_init(struct shaper *sh)
+{
+	if (sh->type == SHAPER_NONE)
+		return;
+
+	memset(&sh->delay, 0, sizeof(struct timespec));
+	bug_on(gettimeofday(&sh->start, NULL));
+	sh->sent = 0;
+}
+
+static void shaper_set_delay(struct shaper *sh, time_t sec, long int ns)
+{
+	sh->delay.tv_sec = sec;
+	sh->delay.tv_nsec = ns;
+}
+
+static void shaper_set_rate(struct shaper *sh, unsigned long long rate,
+			    enum shaper_type type)
+{
+	memset(sh, 0, sizeof(struct shaper));
+	sh->rate = rate;
+	sh->type = type;
+}
+
+static void shaper_delay(struct shaper *sh, unsigned long pkt_len)
+{
+	if (sh->type != SHAPER_NONE)
+		sh->sent += sh->type == SHAPER_BYTES ? pkt_len : 1;
+
+	if (sh->sent >= sh->rate && sh->rate > 0) {
+		struct timeval delay_us;
+		struct timeval time_sent;
+		struct timeval time_1s = { .tv_sec = 1 };
+
+		bug_on(gettimeofday(&sh->end, NULL));
+		timersub(&sh->end, &sh->start, &time_sent);
+
+		if (timercmp(&time_1s, &time_sent, > )) {
+			timersub(&time_1s, &time_sent, &delay_us);
+			timeval_to_timespec(&delay_us, &sh->delay);
+		}
+	}
+
+	if ((sh->delay.tv_sec | sh->delay.tv_nsec) > 0) {
+		nanosleep(&sh->delay, NULL);
+
+		shaper_init(sh);
+	}
+}
+
 static void xmit_slowpath_or_die(struct ctx *ctx, unsigned int cpu, unsigned long orig_num)
 {
 	int ret, icmp_sock = -1;
@@ -559,6 +641,9 @@ static void xmit_slowpath_or_die(struct ctx *ctx, unsigned int cpu, unsigned lon
 	drop_privileges(ctx->enforce, ctx->uid, ctx->gid);
 
 	bug_on(gettimeofday(&start, NULL));
+
+	if (shaper_is_set(&ctx->sh))
+		shaper_init(&ctx->sh);
 
 	while (likely(sigint == 0 && num > 0 && plen > 0)) {
 		pktd = &packet_dyn[i];
@@ -605,8 +690,8 @@ retry:
 		if (ctx->num > 0)
 			num--;
 
-		if ((ctx->gap.tv_sec | ctx->gap.tv_nsec) > 0)
-			nanosleep(&ctx->gap, NULL);
+		if (shaper_is_set(&ctx->sh))
+			shaper_delay(&ctx->sh, packets[i].len);
 	}
 
 	bug_on(gettimeofday(&end, NULL));
@@ -901,6 +986,9 @@ int main(int argc, char **argv)
 	int min_opts = 5;
 	char **cpp_argv = NULL;
 	size_t cpp_argc = 0;
+	unsigned long long rate;
+	enum shaper_type shape_type;
+	struct timespec delay;
 
 	fmemset(&ctx, 0, sizeof(ctx));
 	ctx.cpus = get_number_cpus_online();
@@ -999,9 +1087,7 @@ int main(int argc, char **argv)
 			ctx.num = orig_num;
 			break;
 		case 't':
-			slow = true;
 			ptr = optarg;
-			prctl(PR_SET_TIMERSLACK, 1UL);
 			gap = strtoul(optarg, NULL, 0);
 
 			for (j = i = strlen(optarg); i > 0; --i) {
@@ -1011,28 +1097,67 @@ int main(int argc, char **argv)
 			}
 
 			if (!strncmp(ptr, "ns", strlen("ns"))) {
-				ctx.gap.tv_sec = gap / 1000000000;
-				ctx.gap.tv_nsec = gap % 1000000000;
+				delay.tv_sec = gap / 1000000000;
+				delay.tv_nsec = gap % 1000000000;
 			} else if (*ptr == '\0' || !strncmp(ptr, "us", strlen("us"))) {
 				/*  Default to microseconds for backwards
 				 *  compatibility if no postfix is given.
 				 */
-				ctx.gap.tv_sec = gap / 1000000;
-				ctx.gap.tv_nsec = (gap % 1000000) * 1000;
+				delay.tv_sec = gap / 1000000;
+				delay.tv_nsec = (gap % 1000000) * 1000;
 			} else if (!strncmp(ptr, "ms", strlen("ms"))) {
-				ctx.gap.tv_sec = gap / 1000;
-				ctx.gap.tv_nsec = (gap % 1000) * 1000000;
+				delay.tv_sec = gap / 1000;
+				delay.tv_nsec = (gap % 1000) * 1000000;
 			} else if (!strncmp(ptr, "s", strlen("s"))) {
-				ctx.gap.tv_sec = gap;
-				ctx.gap.tv_nsec = 0;
-			} else
+				delay.tv_sec = gap;
+				delay.tv_nsec = 0;
+			} else {
 				panic("Syntax error in time param!\n");
+			}
 
-			if (gap > 0)
-				/* Fall back to single core to not mess up
-				 * correct timing. We are slow anyway!
-				 */
-				ctx.cpus = 1;
+			shaper_set_delay(&ctx.sh, delay.tv_sec, delay.tv_nsec);
+			break;
+		case 'b':
+			rate = strtoul(optarg, &ptr, 0);
+			if (!rate || optarg == ptr)
+				panic("Invalid rate param\n");
+
+			if (strncmp(ptr, "pps", strlen("pps")) == 0) {
+				shape_type = SHAPER_PKTS;
+			} else if (strncmp(ptr, "B", strlen("B")) == 0) {
+				shape_type = SHAPER_BYTES;
+			} else if (strncmp(ptr, "kB", strlen("kB")) == 0) {
+				shape_type = SHAPER_BYTES;
+				rate *= 1000;
+			} else if (strncmp(ptr, "MB", strlen("MB")) == 0) {
+				shape_type = SHAPER_BYTES;
+				rate *= 1000 * 1000;
+			} else if (strncmp(ptr, "GB", strlen("GB")) == 0) {
+				shape_type = SHAPER_BYTES;
+				rate *= 1000 * 1000 * 1000;
+			} else if (strncmp(ptr, "kbit", strlen("kbit")) == 0) {
+				shape_type = SHAPER_BYTES;
+				rate *= 1000 / 8;
+			} else if (strncmp(ptr, "Mbit", strlen("Mbit")) == 0) {
+				shape_type = SHAPER_BYTES;
+				rate *= 1000 * 1000 / 8;
+			} else if (strncmp(ptr, "Gbit", strlen("Gbit")) == 0) {
+				shape_type = SHAPER_BYTES;
+				rate *= 1000 * 1000 * 1000 / 8;
+			} else if (strncmp(ptr, "KiB", strlen("KiB")) == 0) {
+				shape_type = SHAPER_BYTES;
+				rate *= 1 << 10;
+			} else if (strncmp(ptr, "MiB", strlen("MiB")) == 0) {
+				shape_type = SHAPER_BYTES;
+				rate *= 1 << 20;
+			} else if (strncmp(ptr, "GiB", strlen("GiB")) == 0) {
+				shape_type = SHAPER_BYTES;
+				rate *= 1 << 30;
+			} else {
+				panic("Invalid unit type for rate\n");
+			}
+
+			shaper_set_rate(&ctx.sh, rate, shape_type);
 			break;
 		case 'S':
 			ptr = optarg;
@@ -1116,6 +1241,15 @@ int main(int argc, char **argv)
 		enter_rfmon_mac80211(ctx.device_trans, &ctx.device);
 		panic_handler_add(on_panic_del_rfmon, ctx.device);
 		sleep(0);
+	}
+
+	if (shaper_is_set(&ctx.sh)) {
+		prctl(PR_SET_TIMERSLACK, 1UL);
+		/* Fall back to single core to not mess up correct timing.
+		 * We are slow anyway!
+		 */
+		ctx.cpus = 1;
+		slow = true;
 	}
 
 	/*

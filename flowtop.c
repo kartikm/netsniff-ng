@@ -421,20 +421,6 @@ static struct flow_entry *flow_list_find_prev_id(const struct flow_list *fl,
 	return NULL;
 }
 
-static void flow_list_update_entry(struct flow_list *fl,
-				   const struct nf_conntrack *ct)
-{
-	struct flow_entry *n;
-
-	n = flow_list_find_id(fl, nfct_get_attr_u32(ct, ATTR_ID));
-	if (n == NULL) {
-		flow_list_new_entry(fl, ct);
-		return;
-	}
-
-	flow_entry_from_ct(n, ct);
-}
-
 static void flow_list_destroy_entry(struct flow_list *fl,
 				    const struct nf_conntrack *ct)
 {
@@ -1373,34 +1359,6 @@ static void presenter(void)
 	lookup_cleanup(LT_PORTS_TCP);
 }
 
-static int flow_event_cb(enum nf_conntrack_msg_type type,
-			 struct nf_conntrack *ct, void *data __maybe_unused)
-{
-	if (sigint)
-		return NFCT_CB_STOP;
-
-	synchronize_rcu();
-	spinlock_lock(&flow_list.lock);
-
-	switch (type) {
-	case NFCT_T_NEW:
-		flow_list_new_entry(&flow_list, ct);
-		break;
-	case NFCT_T_UPDATE:
-		flow_list_update_entry(&flow_list, ct);
-		break;
-	case NFCT_T_DESTROY:
-		flow_list_destroy_entry(&flow_list, ct);
-		break;
-	default:
-		break;
-	}
-
-	spinlock_unlock(&flow_list.lock);
-
-	return NFCT_CB_CONTINUE;
-}
-
 static void restore_sysctl(void *obj)
 {
 	struct sysctl_params_ctx *sysctl_ctx = obj;
@@ -1463,16 +1421,9 @@ static void flow_entry_filter(struct flow_entry *n)
 		n->is_visible = true;
 }
 
-static int flow_update_cb(enum nf_conntrack_msg_type type,
-			  struct nf_conntrack *ct, void *data __maybe_unused)
+static int flow_list_update_entry(struct flow_list *fl, struct nf_conntrack *ct)
 {
 	struct flow_entry *n;
-
-	if (type != NFCT_T_UPDATE)
-		return NFCT_CB_CONTINUE;
-
-	if (sigint)
-		return NFCT_CB_STOP;
 
 	n = flow_list_find_id(&flow_list, nfct_get_attr_u32(ct, ATTR_ID));
 	if (!n)
@@ -1482,6 +1433,37 @@ static int flow_update_cb(enum nf_conntrack_msg_type type,
 	flow_entry_update_time(n);
 	flow_entry_from_ct(n, ct);
 	flow_entry_filter(n);
+
+	return NFCT_CB_CONTINUE;
+}
+
+static int flow_event_cb(enum nf_conntrack_msg_type type,
+			 struct nf_conntrack *ct, void *data __maybe_unused)
+{
+	if (sigint)
+		return NFCT_CB_STOP;
+
+	synchronize_rcu();
+	spinlock_lock(&flow_list.lock);
+
+	switch (type) {
+	case NFCT_T_NEW:
+		flow_list_new_entry(&flow_list, ct);
+		break;
+	case NFCT_T_UPDATE:
+		flow_list_update_entry(&flow_list, ct);
+		break;
+	case NFCT_T_DESTROY:
+		flow_list_destroy_entry(&flow_list, ct);
+		break;
+	default:
+		break;
+	}
+
+	spinlock_unlock(&flow_list.lock);
+
+	if (sigint)
+		return NFCT_CB_STOP;
 
 	return NFCT_CB_CONTINUE;
 }
@@ -1633,7 +1615,6 @@ static void collector_dump_flows(void)
 
 static void *collector(void *null __maybe_unused)
 {
-	struct nfct_handle *ct_update;
 	struct nfct_handle *ct_event;
 	struct pollfd poll_fd[1];
 
@@ -1649,20 +1630,10 @@ static void *collector(void *null __maybe_unused)
 
 	nfct_callback_register(ct_event, NFCT_T_ALL, flow_event_cb, NULL);
 
-	ct_update = nfct_open(CONNTRACK, NF_NETLINK_CONNTRACK_UPDATE);
-	if (!ct_update)
-		panic("Cannot create a nfct handle: %s\n", strerror(errno));
-
-	nfct_callback_register(ct_update, NFCT_T_ALL, flow_update_cb, NULL);
-
 	poll_fd[0].fd = nfct_fd(ct_event);
 	poll_fd[0].events = POLLIN;
 
 	if (fcntl(nfct_fd(ct_event), F_SETFL, O_NONBLOCK) == -1)
-		panic("Cannot set non-blocking socket: fcntl(): %s\n",
-		      strerror(errno));
-
-	if (fcntl(nfct_fd(ct_update), F_SETFL, O_NONBLOCK) == -1)
 		panic("Cannot set non-blocking socket: fcntl(): %s\n",
 		      strerror(errno));
 
@@ -1684,7 +1655,7 @@ static void *collector(void *null __maybe_unused)
 			collector_dump_flows();
 		}
 
-		collector_refresh_flows(ct_update);
+		collector_refresh_flows(ct_event);
 
 		status = poll(poll_fd, 1, 0);
 		if (status < 0) {
@@ -1706,7 +1677,6 @@ static void *collector(void *null __maybe_unused)
 	spinlock_destroy(&flow_list.lock);
 
 	nfct_close(ct_event);
-	nfct_close(ct_update);
 
 	pthread_exit(NULL);
 }
