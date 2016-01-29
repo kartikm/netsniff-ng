@@ -15,10 +15,12 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <arpa/inet.h>
 
 #include "trafgen_parser.tab.h"
 #include "xmalloc.h"
 #include "built_in.h"
+#include "str.h"
 
 extern void yyerror(const char *);
 
@@ -75,6 +77,10 @@ number_bin	([0]?[b][0-1]+)
 number_dec	(([0])|([1-9][0-9]*))
 number_ascii	([a-zA-Z])
 
+mac_hex		([a-fA-F0-9]+)
+mac		({mac_hex}:{mac_hex}:{mac_hex}:{mac_hex}:{mac_hex}:{mac_hex})
+ip_addr		([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)
+
 %%
 
 "cpu"		{ return K_CPU; }
@@ -99,6 +105,23 @@ number_ascii	([a-zA-Z])
 "const32"|"c32"	{ return K_CONST32; }
 "const64"|"c64"	{ return K_CONST64; }
 
+"daddr"|"da"	{ return K_DADDR; }
+"saddr"|"sa"	{ return K_SADDR; }
+"prot"[o]?	{ return K_PROT; }
+
+"sha"|"smac"	{ return K_SHA; }
+"spa"|"sip"	{ return K_SPA; }
+"tha"|"tmac"	{ return K_THA; }
+"tpa"|"tip"	{ return K_TPA; }
+"req"|"request"	{ return K_REQUEST; }
+"reply"		{ return K_REPLY; }
+"op"|"oper"	{ return K_OPER; }
+"htype"		{ return K_HTYPE; }
+"ptype"		{ return K_PTYPE; }
+
+"eth"		{ return K_ETH; }
+"arp"		{ return K_ARP; }
+
 [ ]*"-"[ ]*	{ return '-'; }
 [ ]*"+"[ ]*	{ return '+'; }
 [ ]*"*"[ ]*	{ return '*'; }
@@ -117,6 +140,7 @@ number_ascii	([a-zA-Z])
 "]"		{ return ']'; }
 ","		{ return ','; }
 ":"		{ return ':'; }
+"="		{ return '='; }
 
 "\n"		{ yylineno++; }
 
@@ -145,6 +169,14 @@ number_ascii	([a-zA-Z])
 
 {number_ascii}	{ yylval.number = (uint8_t) (*yytext);
 		  return number; }
+
+{mac}	        { if (str2mac(yytext, yylval.bytes, 256))
+			panic("Failed to parse MAC address %s\n", yytext);
+		  return mac; }
+
+{ip_addr}	{ if (inet_pton(AF_INET, yytext, &yylval.ip_addr) != 1)
+			panic("Failed to parse IPv4 address %s\n", yytext);
+		  return ip_addr; };
 
 "'\\x"[a-fA-F0-9]{2}"'" { yylval.number = strtol(yytext + 3, NULL, 16);
 		  return number; }

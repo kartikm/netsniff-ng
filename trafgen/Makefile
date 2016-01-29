@@ -19,6 +19,8 @@ trafgen-objs =	xmalloc.o \
 		timer.o \
 		sysctl.o \
 		cpp.o \
+		trafgen_proto.o \
+		trafgen_l2.o \
 		trafgen_lexer.yy.o \
 		trafgen_parser.tab.o \
 		trafgen.o

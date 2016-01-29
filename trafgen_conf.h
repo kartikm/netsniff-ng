@@ -60,4 +60,8 @@ extern void compile_packets(char *file, bool verbose, unsigned int cpu,
 			    bool invoke_cpp, char *const cpp_argv[]);
 extern void cleanup_packets(void);
 
+extern void set_fill(uint8_t val, size_t len);
+
+extern struct packet *current_packet(void);
+
 #endif /* TRAFGEN_CONF */

@@ -17,10 +17,14 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <libgen.h>
+#include <net/if_arp.h>
+#include <netinet/in.h>
 
 #include "xmalloc.h"
 #include "trafgen_parser.tab.h"
 #include "trafgen_conf.h"
+#include "trafgen_proto.h"
+#include "trafgen_l2.h"
 #include "built_in.h"
 #include "die.h"
 #include "str.h"
@@ -58,6 +62,8 @@ extern size_t dlen;
 #define packetds_last		(packet_dyn[packetd_last].slen - 1)
 
 static int our_cpu, min_cpu = -1, max_cpu = -1;
+
+static struct proto_hdr *hdr;
 
 static inline int test_ignore(void)
 {
@@ -137,6 +143,11 @@ static void realloc_packet(void)
 	__init_new_csum_slot(&packet_dyn[packetd_last]);
 }
 
+struct packet *current_packet(void)
+{
+	return &packets[packet_last];
+}
+
 static void set_byte(uint8_t val)
 {
 	struct packet *pkt = &packets[packet_last];
@@ -157,7 +168,7 @@ static void set_multi_byte(uint8_t *s, size_t len)
 		set_byte(s[i]);
 }
 
-static void set_fill(uint8_t val, size_t len)
+void set_fill(uint8_t val, size_t len)
 {
 	size_t i;
 	struct packet *pkt = &packets[packet_last];
@@ -319,22 +330,38 @@ static void set_dynamic_incdec(uint8_t start, uint8_t stop, uint8_t stepping,
 	__setup_new_counter(&pktd->cnt[packetdc_last], start, stop, stepping, type);
 }
 
+static void proto_add(enum proto_id pid)
+{
+	proto_header_init(pid);
+	hdr = proto_current_header();
+}
+
 %}
 
 %union {
+	struct in_addr ip_addr;
 	long long int number;
+	uint8_t bytes[256];
 	char *str;
 }
 
 %token K_COMMENT K_FILL K_RND K_SEQINC K_SEQDEC K_DRND K_DINC K_DDEC K_WHITE
 %token K_CPU K_CSUMIP K_CSUMUDP K_CSUMTCP K_CSUMUDP6 K_CSUMTCP6 K_CONST8 K_CONST16 K_CONST32 K_CONST64
 
+%token K_DADDR K_SADDR K_PROT
+%token K_OPER K_SHA K_SPA K_THA K_TPA K_REQUEST K_REPLY K_PTYPE K_HTYPE
+
+%token K_ETH
+%token K_ARP
+
 %token ',' '{' '}' '(' ')' '[' ']' ':' '-' '+' '*' '/' '%' '&' '|' '<' '>' '^'
 
-%token number string
+%token number string mac ip_addr
 
 %type <number> number expression
 %type <str> string
+%type <bytes> mac
+%type <ip_addr> ip_addr
 
 %left '-' '+' '*' '/' '%' '&' '|' '<' '>' '^'
 
@@ -367,9 +394,16 @@ noenforce_white
 	| delimiter_nowhite { }
 	;
 
+skip_white
+	: { }
+	| K_WHITE { }
+	;
 packet
 	: '{' noenforce_white payload noenforce_white '}' {
 			min_cpu = max_cpu = -1;
+
+			proto_packet_finish();
+
 			realloc_packet();
 		}
 	| K_CPU '(' number cpu_delim number ')' ':' noenforce_white '{' noenforce_white payload noenforce_white '}' {
@@ -383,10 +417,15 @@ packet
 				max_cpu = tmp;
 			}
 
+			proto_packet_finish();
+
 			realloc_packet();
 		}
 	| K_CPU '(' number ')' ':' noenforce_white '{' noenforce_white payload noenforce_white '}' {
 			min_cpu = max_cpu = $3;
+
+			proto_packet_finish();
+
 			realloc_packet();
 		}
 	;
@@ -417,6 +456,7 @@ elem
 	| ddec { }
 	| csum { }
 	| const { }
+	| proto { proto_header_finish(hdr); }
 	| inline_comment { }
 	;
 
@@ -529,6 +569,72 @@ ddec
 		{ set_dynamic_incdec($3, $5, 1, TYPE_DEC); }
 	| K_DDEC '(' number delimiter number delimiter number ')'
 		{ set_dynamic_incdec($3, $5, $7, TYPE_DEC); }
+	;
+
+proto
+	: eth_proto { }
+	| arp_proto { }
+	;
+
+eth_proto
+	: eth '(' eth_param_list ')' { }
+	;
+
+eth
+	: K_ETH	{ proto_add(PROTO_ETH); }
+	;
+
+eth_param_list
+	: { }
+	| eth_field { }
+	| eth_field delimiter eth_param_list { }
+	;
+
+eth_field
+	: K_DADDR  skip_white '=' skip_white mac
+		{ proto_field_set_bytes(hdr, ETH_DST_ADDR, $5); }
+	| K_SADDR  skip_white '=' skip_white mac
+		{ proto_field_set_bytes(hdr, ETH_SRC_ADDR, $5); }
+	| K_PROT skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, ETH_PROTO_ID, $5); }
+	;
+
+arp_proto
+	: arp '(' arp_param_list ')' { }
+	;
+
+arp_param_list
+	: { }
+	| arp_field { }
+	| arp_field delimiter arp_param_list { }
+	;
+
+arp_field
+	: K_OPER  skip_white '=' skip_white K_REQUEST
+		{ proto_field_set_be16(hdr, ARP_OPER, ARPOP_REQUEST); }
+	| K_OPER  skip_white '=' skip_white K_REPLY
+		{ proto_field_set_be16(hdr, ARP_OPER, ARPOP_REPLY); }
+	| K_OPER skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, ARP_OPER, $5); }
+	| K_REQUEST
+		{ proto_field_set_be16(hdr, ARP_OPER, ARPOP_REQUEST); }
+	| K_REPLY
+		{ proto_field_set_be16(hdr, ARP_OPER, ARPOP_REPLY); }
+	| K_HTYPE skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, ARP_HTYPE, $5); }
+	| K_PTYPE skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, ARP_PTYPE, $5); }
+	| K_SHA skip_white '=' skip_white mac
+		{ proto_field_set_bytes(hdr, ARP_SHA, $5); }
+	| K_THA skip_white '=' skip_white mac
+		{ proto_field_set_bytes(hdr, ARP_THA, $5); }
+	| K_SPA skip_white '=' skip_white ip_addr
+		{ proto_field_set_u32(hdr, ARP_SPA, $5.s_addr); }
+	| K_TPA skip_white '=' skip_white ip_addr
+		{ proto_field_set_u32(hdr, ARP_TPA, $5.s_addr); }
+	;
+arp
+	: K_ARP	{ proto_add(PROTO_ARP); }
 	;
 
 %%
