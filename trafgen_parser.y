@@ -25,6 +25,8 @@
 #include "trafgen_conf.h"
 #include "trafgen_proto.h"
 #include "trafgen_l2.h"
+#include "trafgen_l3.h"
+#include "trafgen_l4.h"
 #include "built_in.h"
 #include "die.h"
 #include "str.h"
@@ -348,11 +350,15 @@ static void proto_add(enum proto_id pid)
 %token K_COMMENT K_FILL K_RND K_SEQINC K_SEQDEC K_DRND K_DINC K_DDEC K_WHITE
 %token K_CPU K_CSUMIP K_CSUMUDP K_CSUMTCP K_CSUMUDP6 K_CSUMTCP6 K_CONST8 K_CONST16 K_CONST32 K_CONST64
 
-%token K_DADDR K_SADDR K_PROT
+%token K_DADDR K_SADDR K_ETYPE
 %token K_OPER K_SHA K_SPA K_THA K_TPA K_REQUEST K_REPLY K_PTYPE K_HTYPE
+%token K_PROT K_TTL K_DSCP K_ECN K_TOS K_LEN K_ID K_FLAGS K_FRAG K_IHL K_VER K_CSUM K_DF K_MF
+%token K_SPORT K_DPORT
 
 %token K_ETH
 %token K_ARP
+%token K_IP4
+%token K_UDP
 
 %token ',' '{' '}' '(' ')' '[' ']' ':' '-' '+' '*' '/' '%' '&' '|' '<' '>' '^'
 
@@ -574,6 +580,8 @@ ddec
 proto
 	: eth_proto { }
 	| arp_proto { }
+	| ip4_proto { }
+	| udp_proto { }
 	;
 
 eth_proto
@@ -595,8 +603,8 @@ eth_field
 		{ proto_field_set_bytes(hdr, ETH_DST_ADDR, $5); }
 	| K_SADDR  skip_white '=' skip_white mac
 		{ proto_field_set_bytes(hdr, ETH_SRC_ADDR, $5); }
-	| K_PROT skip_white '=' skip_white number
-		{ proto_field_set_be16(hdr, ETH_PROTO_ID, $5); }
+	| K_ETYPE skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, ETH_TYPE, $5); }
 	;
 
 arp_proto
@@ -635,6 +643,78 @@ arp_field
 	;
 arp
 	: K_ARP	{ proto_add(PROTO_ARP); }
+	;
+
+ip4_proto
+	: ip4 '(' ip4_param_list ')' { }
+	;
+
+ip4_param_list
+	: { }
+	| ip4_field { }
+	| ip4_field delimiter ip4_param_list { }
+	;
+
+ip4_field
+	: K_VER skip_white '=' skip_white number
+		{ proto_field_set_u8(hdr, IP4_VER, $5); }
+	| K_IHL skip_white '=' skip_white number
+		{ proto_field_set_u8(hdr, IP4_IHL, $5); }
+	| K_DADDR  skip_white '=' skip_white ip_addr
+		{ proto_field_set_u32(hdr, IP4_DADDR, $5.s_addr); }
+	| K_SADDR  skip_white '=' skip_white ip_addr
+		{ proto_field_set_u32(hdr, IP4_SADDR, $5.s_addr); }
+	| K_PROT skip_white '=' skip_white number
+		{ proto_field_set_u8(hdr, IP4_PROTO, $5); }
+	| K_TTL skip_white '=' skip_white number
+		{ proto_field_set_u8(hdr, IP4_TTL, $5); }
+	| K_DSCP skip_white '=' skip_white number
+		{ proto_field_set_u8(hdr, IP4_DSCP, $5); }
+	| K_ECN skip_white '=' skip_white number
+		{ proto_field_set_u8(hdr, IP4_ECN, $5); }
+	| K_TOS skip_white '=' skip_white number
+		{ proto_field_set_u8(hdr, IP4_TOS, $5); }
+	| K_LEN skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, IP4_LEN, $5); }
+	| K_ID skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, IP4_ID, $5); }
+	| K_FLAGS skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, IP4_FLAGS, $5); }
+	| K_DF  { proto_field_set_be16(hdr, IP4_DF, 1); }
+	| K_MF  { proto_field_set_be16(hdr, IP4_MF, 1); }
+	| K_FRAG skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, IP4_FRAG_OFFS, $5); }
+	| K_CSUM skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, IP4_CSUM, $5); }
+	;
+
+ip4
+	: K_IP4	{ proto_add(PROTO_IP4); }
+	;
+
+udp_proto
+	: udp '(' udp_param_list ')' { }
+	;
+
+udp_param_list
+	: { }
+	| udp_field { }
+	| udp_field delimiter udp_param_list { }
+	;
+
+udp_field
+	: K_SPORT  skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, UDP_SPORT, $5); }
+	| K_DPORT  skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, UDP_DPORT, $5); }
+	| K_LEN skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, UDP_LEN, $5); }
+	| K_CSUM skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, UDP_CSUM, $5); }
+	;
+
+udp
+	: K_UDP	{ proto_add(PROTO_UDP); }
 	;
 
 %%
