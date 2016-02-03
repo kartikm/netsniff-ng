@@ -19,6 +19,7 @@
 #include <libgen.h>
 #include <net/if_arp.h>
 #include <netinet/in.h>
+#include <linux/if_ether.h>
 
 #include "xmalloc.h"
 #include "trafgen_parser.tab.h"
@@ -334,14 +335,13 @@ static void set_dynamic_incdec(uint8_t start, uint8_t stop, uint8_t stepping,
 
 static void proto_add(enum proto_id pid)
 {
-	proto_header_init(pid);
-	hdr = proto_current_header();
+	hdr = proto_header_init(pid);
 }
 
 %}
 
 %union {
-	struct in_addr ip_addr;
+	struct in_addr ip4_addr;
 	long long int number;
 	uint8_t bytes[256];
 	char *str;
@@ -354,20 +354,23 @@ static void proto_add(enum proto_id pid)
 %token K_OPER K_SHA K_SPA K_THA K_TPA K_REQUEST K_REPLY K_PTYPE K_HTYPE
 %token K_PROT K_TTL K_DSCP K_ECN K_TOS K_LEN K_ID K_FLAGS K_FRAG K_IHL K_VER K_CSUM K_DF K_MF
 %token K_SPORT K_DPORT
+%token K_SEQ K_ACK_SEQ K_DOFF K_CWR K_ECE K_URG K_ACK K_PSH K_RST K_SYN K_FIN K_WINDOW K_URG_PTR
+%token K_TPID K_TCI K_PCP K_DEI K_1Q K_1AD
 
 %token K_ETH
+%token K_VLAN
 %token K_ARP
 %token K_IP4
-%token K_UDP
+%token K_UDP K_TCP
 
 %token ',' '{' '}' '(' ')' '[' ']' ':' '-' '+' '*' '/' '%' '&' '|' '<' '>' '^'
 
-%token number string mac ip_addr
+%token number string mac ip4_addr
 
 %type <number> number expression
 %type <str> string
 %type <bytes> mac
-%type <ip_addr> ip_addr
+%type <ip4_addr> ip4_addr
 
 %left '-' '+' '*' '/' '%' '&' '|' '<' '>' '^'
 
@@ -579,9 +582,11 @@ ddec
 
 proto
 	: eth_proto { }
+	| vlan_proto { }
 	| arp_proto { }
 	| ip4_proto { }
 	| udp_proto { }
+	| tcp_proto { }
 	;
 
 eth_proto
@@ -598,13 +603,54 @@ eth_param_list
 	| eth_field delimiter eth_param_list { }
 	;
 
+eth_type
+	: K_ETYPE { }
+	| K_PROT { }
+	;
+
 eth_field
-	: K_DADDR  skip_white '=' skip_white mac
+	: K_DADDR skip_white '=' skip_white mac
 		{ proto_field_set_bytes(hdr, ETH_DST_ADDR, $5); }
-	| K_SADDR  skip_white '=' skip_white mac
+	| K_SADDR skip_white '=' skip_white mac
 		{ proto_field_set_bytes(hdr, ETH_SRC_ADDR, $5); }
-	| K_ETYPE skip_white '=' skip_white number
+	| eth_type skip_white '=' skip_white number
 		{ proto_field_set_be16(hdr, ETH_TYPE, $5); }
+	;
+
+vlan_proto
+	: vlan '(' vlan_param_list ')' { }
+	;
+
+vlan
+	: K_VLAN { proto_add(PROTO_VLAN); }
+	;
+
+vlan_param_list
+	: { }
+	| vlan_field { }
+	| vlan_field delimiter vlan_param_list { }
+	;
+
+vlan_type
+	: K_TPID { }
+	| K_PROT
+	;
+
+vlan_field
+	: vlan_type skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, VLAN_TPID, $5); }
+	| K_1Q
+		{ proto_field_set_be16(hdr, VLAN_TPID, ETH_P_8021Q); }
+	| K_1AD
+		{ proto_field_set_be16(hdr, VLAN_TPID, ETH_P_8021AD); }
+	| K_TCI skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, VLAN_TCI, $5); }
+	| K_PCP skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, VLAN_PCP, $5); }
+	| K_DEI skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, VLAN_DEI, $5); }
+	| K_ID skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, VLAN_VID, $5); }
 	;
 
 arp_proto
@@ -618,9 +664,9 @@ arp_param_list
 	;
 
 arp_field
-	: K_OPER  skip_white '=' skip_white K_REQUEST
+	: K_OPER skip_white '=' skip_white K_REQUEST
 		{ proto_field_set_be16(hdr, ARP_OPER, ARPOP_REQUEST); }
-	| K_OPER  skip_white '=' skip_white K_REPLY
+	| K_OPER skip_white '=' skip_white K_REPLY
 		{ proto_field_set_be16(hdr, ARP_OPER, ARPOP_REPLY); }
 	| K_OPER skip_white '=' skip_white number
 		{ proto_field_set_be16(hdr, ARP_OPER, $5); }
@@ -636,9 +682,9 @@ arp_field
 		{ proto_field_set_bytes(hdr, ARP_SHA, $5); }
 	| K_THA skip_white '=' skip_white mac
 		{ proto_field_set_bytes(hdr, ARP_THA, $5); }
-	| K_SPA skip_white '=' skip_white ip_addr
+	| K_SPA skip_white '=' skip_white ip4_addr
 		{ proto_field_set_u32(hdr, ARP_SPA, $5.s_addr); }
-	| K_TPA skip_white '=' skip_white ip_addr
+	| K_TPA skip_white '=' skip_white ip4_addr
 		{ proto_field_set_u32(hdr, ARP_TPA, $5.s_addr); }
 	;
 arp
@@ -660,9 +706,9 @@ ip4_field
 		{ proto_field_set_u8(hdr, IP4_VER, $5); }
 	| K_IHL skip_white '=' skip_white number
 		{ proto_field_set_u8(hdr, IP4_IHL, $5); }
-	| K_DADDR  skip_white '=' skip_white ip_addr
+	| K_DADDR skip_white '=' skip_white ip4_addr
 		{ proto_field_set_u32(hdr, IP4_DADDR, $5.s_addr); }
-	| K_SADDR  skip_white '=' skip_white ip_addr
+	| K_SADDR skip_white '=' skip_white ip4_addr
 		{ proto_field_set_u32(hdr, IP4_SADDR, $5.s_addr); }
 	| K_PROT skip_white '=' skip_white number
 		{ proto_field_set_u8(hdr, IP4_PROTO, $5); }
@@ -703,9 +749,9 @@ udp_param_list
 	;
 
 udp_field
-	: K_SPORT  skip_white '=' skip_white number
+	: K_SPORT skip_white '=' skip_white number
 		{ proto_field_set_be16(hdr, UDP_SPORT, $5); }
-	| K_DPORT  skip_white '=' skip_white number
+	| K_DPORT skip_white '=' skip_white number
 		{ proto_field_set_be16(hdr, UDP_DPORT, $5); }
 	| K_LEN skip_white '=' skip_white number
 		{ proto_field_set_be16(hdr, UDP_LEN, $5); }
@@ -715,6 +761,47 @@ udp_field
 
 udp
 	: K_UDP	{ proto_add(PROTO_UDP); }
+	;
+
+tcp_proto
+	: tcp '(' tcp_param_list ')' { }
+	;
+
+tcp_param_list
+	: { }
+	| tcp_field { }
+	| tcp_field delimiter tcp_param_list { }
+	;
+
+tcp_field
+	: K_SPORT skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, TCP_SPORT, $5); }
+	| K_DPORT skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, TCP_DPORT, $5); }
+	| K_SEQ skip_white '=' skip_white number
+		{ proto_field_set_be32(hdr, TCP_SEQ, $5); }
+	| K_ACK_SEQ skip_white '=' skip_white number
+		{ proto_field_set_be32(hdr, TCP_ACK_SEQ, $5); }
+	| K_DOFF skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, TCP_DOFF, $5); }
+	| K_CWR { proto_field_set_be16(hdr, TCP_CWR, 1); }
+	| K_ECE { proto_field_set_be16(hdr, TCP_ECE, 1); }
+	| K_URG { proto_field_set_be16(hdr, TCP_URG, 1); }
+	| K_ACK { proto_field_set_be16(hdr, TCP_ACK, 1); }
+	| K_PSH { proto_field_set_be16(hdr, TCP_PSH, 1); }
+	| K_RST { proto_field_set_be16(hdr, TCP_RST, 1); }
+	| K_SYN { proto_field_set_be16(hdr, TCP_SYN, 1); }
+	| K_FIN { proto_field_set_be16(hdr, TCP_FIN, 1); }
+	| K_WINDOW skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, TCP_WINDOW, $5); }
+	| K_CSUM skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, TCP_CSUM, $5); }
+	| K_URG_PTR skip_white '=' skip_white number
+		{ proto_field_set_be16(hdr, TCP_URG_PTR, $5); }
+	;
+
+tcp
+	: K_TCP	{ proto_add(PROTO_TCP); }
 	;
 
 %%

@@ -79,7 +79,7 @@ number_ascii	([a-zA-Z])
 
 mac_hex		([a-fA-F0-9]+)
 mac		({mac_hex}:{mac_hex}:{mac_hex}:{mac_hex}:{mac_hex}:{mac_hex})
-ip_addr		([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)
+ip4_addr	([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)
 
 %%
 
@@ -105,13 +105,20 @@ ip_addr		([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)
 "const32"|"c32"	{ return K_CONST32; }
 "const64"|"c64"	{ return K_CONST64; }
 
-	/* IPv4 proto field (must be before more specific rule for K_ETYPE) */
 "prot"[o]?	{ return K_PROT; }
 
 	/* Ethernet */
 "daddr"|"da"	{ return K_DADDR; }
 "saddr"|"sa"	{ return K_SADDR; }
-[e]?"type"|"prot"[o]?	{ return K_ETYPE; }
+[e]?"type"	{ return K_ETYPE; }
+
+	/* VLAN (802.1Q & 802.1ad) */
+"tpid"		{ return K_TPID; }
+"tci"		{ return K_TCI; }
+"pcp"		{ return K_PCP; }
+"dei"|"cfi"	{ return K_DEI; }
+"1ad"		{ return K_1AD; }
+"1q"		{ return K_1Q; }
 
 	/* ARP */
 "sha"|"smac"	{ return K_SHA; }
@@ -143,10 +150,27 @@ ip_addr		([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)
 "sp"|"sport"	{ return K_SPORT; }
 "dp"|"dport"	{ return K_DPORT; }
 
+	/* TCP */
+"seq"		{ return K_SEQ; }
+"ackseq"|"aseq"	{ return K_ACK_SEQ; }
+"doff"|hlen	{ return K_DOFF; }
+"cwr"		{ return K_CWR; }
+"ece"|"ecn"	{ return K_ECE; }
+"urg"		{ return K_URG; }
+"ack"		{ return K_ACK; }
+"psh"		{ return K_PSH; }
+"rst"		{ return K_RST; }
+"syn"		{ return K_SYN; }
+"fin"		{ return K_FIN; }
+"win"|"window"	{ return K_WINDOW; }
+"urgptr"	{ return K_URG_PTR; }
+
 "eth"		{ return K_ETH; }
+"vlan"		{ return K_VLAN; }
 "arp"		{ return K_ARP; }
 "ip4"|"ipv4"	{ return K_IP4; }
 "udp"		{ return K_UDP; }
+"tcp"		{ return K_TCP; }
 
 [ ]*"-"[ ]*	{ return '-'; }
 [ ]*"+"[ ]*	{ return '+'; }
@@ -200,9 +224,9 @@ ip_addr		([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)
 			panic("Failed to parse MAC address %s\n", yytext);
 		  return mac; }
 
-{ip_addr}	{ if (inet_pton(AF_INET, yytext, &yylval.ip_addr) != 1)
+{ip4_addr}	{ if (inet_pton(AF_INET, yytext, &yylval.ip4_addr) != 1)
 			panic("Failed to parse IPv4 address %s\n", yytext);
-		  return ip_addr; };
+		  return ip4_addr; };
 
 "'\\x"[a-fA-F0-9]{2}"'" { yylval.number = strtol(yytext + 3, NULL, 16);
 		  return number; }
