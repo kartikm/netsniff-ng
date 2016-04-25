@@ -31,14 +31,6 @@ static size_t headers_count;
 
 static struct proto_hdr *registered;
 
-static inline struct proto_hdr *proto_current_header(void)
-{
-	if (headers_count > 0)
-		return headers[headers_count - 1];
-
-	panic("No header was added\n");
-}
-
 struct proto_hdr *proto_lower_header(struct proto_hdr *hdr)
 {
 	struct proto_hdr *lower = NULL;
@@ -136,8 +128,7 @@ struct proto_hdr *proto_header_init(enum proto_id pid)
 	struct proto_hdr *hdr = proto_header_by_id(pid);
 	struct proto_hdr *new_hdr;
 
-	if (headers_count >= PROTO_MAX_LAYERS)
-		panic("Too many proto headers\n");
+	bug_on(headers_count >= PROTO_MAX_LAYERS);
 
 	new_hdr = xmalloc(sizeof(*new_hdr));
 	memcpy(new_hdr, hdr, sizeof(*new_hdr));
@@ -161,7 +152,7 @@ struct proto_hdr *proto_lower_default_add(struct proto_hdr *hdr,
 	struct proto_hdr *current;
 
 	if (headers_count > 0) {
-		current = proto_current_header();
+		current = headers[headers_count - 1];
 
 		if (current->layer >= proto_header_by_id(pid)->layer)
 			goto set_proto;

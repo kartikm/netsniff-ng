@@ -17,6 +17,8 @@ extern const char *geoip4_region_name(struct sockaddr_in *sa);
 extern const char *geoip6_region_name(struct sockaddr_in6 *sa);
 extern const char *geoip4_country_name(struct sockaddr_in *sa);
 extern const char *geoip6_country_name(struct sockaddr_in6 *sa);
+extern const char *geoip4_country_code3_name(struct sockaddr_in *sa);
+extern const char *geoip6_country_code3_name(struct sockaddr_in6 *sa);
 extern float geoip4_longitude(struct sockaddr_in *sa);
 extern float geoip4_latitude(struct sockaddr_in *sa);
 extern float geoip6_longitude(struct sockaddr_in6 *sa);
@@ -99,6 +101,16 @@ static inline const char *geoip4_as_name(struct sockaddr_in *sa)
 }
 
 static inline const char *geoip6_as_name(struct sockaddr_in6 *sa)
+{
+	return NULL;
+}
+
+static inline const char *geoip4_country_code3_name(struct sockaddr_in *sa)
+{
+	return NULL;
+}
+
+static inline const char *geoip6_country_code3_name(struct sockaddr_in6 *sa)
 {
 	return NULL;
 }
