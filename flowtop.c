@@ -992,7 +992,7 @@ static void print_flow_peer_info(const struct flow_entry *n, enum flow_direction
 			              tmp, sizeof(tmp) - 1));
 }
 
-static void draw_flow_entry(WINDOW *scr, const struct flow_entry *n, int line)
+static void draw_flow_entry(const struct flow_entry *n)
 {
 	char tmp[128];
 
@@ -1117,7 +1117,7 @@ static void draw_flows(WINDOW *screen, struct flow_list *fl,
 		if (--skip >= 0)
 			continue;
 
-		draw_flow_entry(screen, n, line);
+		draw_flow_entry(n);
 		line += row_width;
 	}
 
@@ -1151,7 +1151,7 @@ static void draw_flows(WINDOW *screen, struct flow_list *fl,
 	rcu_read_unlock();
 }
 
-static void draw_help(WINDOW *screen)
+static void draw_help(void)
 {
 	int col = 0;
 	int row = 1;
@@ -1212,7 +1212,7 @@ static void draw_header(WINDOW *screen)
 	attroff(A_STANDOUT);
 }
 
-static void draw_footer(WINDOW *screen)
+static void draw_footer(void)
 {
 	int i;
 
@@ -1356,11 +1356,11 @@ static void presenter(void)
 		draw_header(screen);
 
 		if (show_help)
-			draw_help(screen);
+			draw_help();
 		else
 			draw_flows(screen, &flow_list, skip_lines);
 
-		draw_footer(screen);
+		draw_footer();
 
 		usleep(80000);
 	}
@@ -1439,7 +1439,7 @@ static int flow_list_update_entry(struct flow_list *fl, struct nf_conntrack *ct)
 {
 	struct flow_entry *n;
 
-	n = flow_list_find_id(&flow_list, nfct_get_attr_u32(ct, ATTR_ID));
+	n = flow_list_find_id(fl, nfct_get_attr_u32(ct, ATTR_ID));
 	if (!n)
 		return NFCT_CB_CONTINUE;
 

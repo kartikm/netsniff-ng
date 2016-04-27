@@ -17,6 +17,7 @@ enum proto_id {
 	PROTO_MPLS,
 	PROTO_IP4,
 	PROTO_IP6,
+	PROTO_ICMP6,
 	PROTO_UDP,
 	PROTO_TCP,
 };
@@ -104,5 +105,8 @@ extern void proto_field_set_default_dev_mac(struct proto_hdr *hdr, uint32_t fid)
 
 extern void proto_field_set_dev_ipv4(struct proto_hdr *hdr, uint32_t fid);
 extern void proto_field_set_default_dev_ipv4(struct proto_hdr *hdr, uint32_t fid);
+
+extern void proto_field_set_dev_ipv6(struct proto_hdr *hdr, uint32_t fid);
+extern void proto_field_set_default_dev_ipv6(struct proto_hdr *hdr, uint32_t fid);
 
 #endif /* TRAFGEN_PROTO_H */
