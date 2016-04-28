@@ -48,7 +48,8 @@ union tpacket_uhdr {
 	(((hdr).h2)->member)
 #endif /* HAVE_TPACKET3 */
 
-static inline uint16_t tpacket_uhdr_vlan_tci(union tpacket_uhdr *hdr, bool v3)
+static inline uint16_t tpacket_uhdr_vlan_tci(union tpacket_uhdr *hdr __maybe_unused,
+					     bool v3 __maybe_unused)
 {
 #ifdef HAVE_TPACKET3
 	if (v3)
@@ -57,7 +58,8 @@ static inline uint16_t tpacket_uhdr_vlan_tci(union tpacket_uhdr *hdr, bool v3)
 	return 0;
 }
 
-static inline uint16_t tpacket_uhdr_vlan_proto(union tpacket_uhdr *hdr, bool v3)
+static inline uint16_t tpacket_uhdr_vlan_proto(union tpacket_uhdr *hdr __maybe_unused,
+					       bool v3 __maybe_unused)
 {
 #if defined(HAVE_TPACKET3) && defined(TP_STATUS_VLAN_TPID_VALID)
 	if (v3)
@@ -205,7 +207,7 @@ static inline int get_sockopt_tpacket(int sock)
 	return val;
 }
 
-extern void setup_ring_layout_generic(int sock, struct ring *ring, size_t size,
+extern void setup_ring_layout_generic(struct ring *ring, size_t size,
 				      bool jumbo_support);
 extern void mmap_ring_generic(int sock, struct ring *ring);
 extern void alloc_ring_frames_generic(struct ring *ring, size_t num, size_t size);
