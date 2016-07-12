@@ -115,7 +115,8 @@ ip6_addr	(({a_hex}?:)?({a_hex}?:)?({a_hex}?:)?({a_hex}?:)?({a_hex}?:)?({a_hex}?:
 	/* Ethernet */
 "daddr"|"da"	{ return K_DADDR; }
 "saddr"|"sa"	{ return K_SADDR; }
-[e]?"type"	{ return K_ETYPE; }
+"etype"	        { return K_ETYPE; }
+"type"	        { return K_TYPE; }
 
 	/* VLAN (802.1Q & 802.1ad) */
 "tpid"		{ return K_TPID; }
@@ -162,7 +163,6 @@ ip6_addr	(({a_hex}?:)?({a_hex}?:)?({a_hex}?:)?({a_hex}?:)?({a_hex}?:)?({a_hex}?:
 "hl"|"hoplimit"	{ return K_HOP_LIMIT; }
 
 	/* ICMPv6 */
-"mtype"		{ return K_MTYPE; }
 "code"		{ return K_CODE; }
 "echorequest"	{ return K_ECHO_REQUEST; }
 "echoreply"	{ return K_ECHO_REPLY; }
