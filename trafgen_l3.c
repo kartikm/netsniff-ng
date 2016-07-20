@@ -53,10 +53,8 @@ static void ipv4_packet_finish(struct proto_hdr *hdr)
 
 	if (!proto_field_is_set(hdr, IP4_CSUM)) {
 		uint16_t csum;
-		uint8_t ihl;
 
-		ihl = proto_field_get_u8(hdr, IP4_IHL);
-		csum = htons(calc_csum(&pkt->payload[hdr->pkt_offset], ihl * 4));
+		csum = htons(calc_csum(&pkt->payload[hdr->pkt_offset], hdr->len));
 		proto_field_set_u16(hdr, IP4_CSUM, bswap_16(csum));
 	}
 }
@@ -68,6 +66,9 @@ static void ipv4_set_next_proto(struct proto_hdr *hdr, enum proto_id pid)
 	switch(pid) {
 	case PROTO_IP4:
 		ip_proto = IPPROTO_IPIP;
+		break;
+	case PROTO_IP6:
+		ip_proto = IPPROTO_IPV6;
 		break;
 	case PROTO_ICMP4:
 		ip_proto = IPPROTO_ICMP;
