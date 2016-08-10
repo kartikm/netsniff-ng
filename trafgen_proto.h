@@ -5,12 +5,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-struct proto_ctx {
-	const char *dev;
-};
-
 enum proto_id {
-	PROTO_NONE,
+	PROTO_NONE = 0,
 	PROTO_ETH,
 	PROTO_VLAN,
 	PROTO_ARP,
@@ -21,6 +17,7 @@ enum proto_id {
 	PROTO_ICMP6,
 	PROTO_UDP,
 	PROTO_TCP,
+	__PROTO_MAX,
 };
 
 enum proto_layer {
@@ -29,6 +26,8 @@ enum proto_layer {
 	PROTO_L3,
 	PROTO_L4,
 };
+
+struct proto_hdr;
 
 struct proto_field {
 	uint32_t id;
@@ -40,6 +39,7 @@ struct proto_field {
 
 	bool is_set;
 	uint16_t pkt_offset;
+	struct proto_hdr *hdr;
 };
 
 struct proto_hdr {
@@ -47,8 +47,8 @@ struct proto_hdr {
 	enum proto_layer layer;
 
 	struct proto_hdr *next;
-	struct proto_ctx *ctx;
 	uint16_t pkt_offset;
+	uint32_t pkt_id;
 	struct proto_field *fields;
 	size_t fields_count;
 	size_t len;
@@ -77,7 +77,7 @@ extern void proto_header_fields_add(struct proto_hdr *hdr,
 
 extern bool proto_field_is_set(struct proto_hdr *hdr, uint32_t fid);
 extern void proto_field_set_bytes(struct proto_hdr *hdr, uint32_t fid,
-				  uint8_t *bytes);
+				  const uint8_t *bytes);
 extern void proto_field_set_u8(struct proto_hdr *hdr, uint32_t fid, uint8_t val);
 extern uint8_t proto_field_get_u8(struct proto_hdr *hdr, uint32_t fid);
 extern void proto_field_set_u16(struct proto_hdr *hdr, uint32_t fid, uint16_t val);
@@ -86,7 +86,7 @@ extern void proto_field_set_u32(struct proto_hdr *hdr, uint32_t fid, uint32_t va
 extern uint32_t proto_field_get_u32(struct proto_hdr *hdr, uint32_t fid);
 
 extern void proto_field_set_default_bytes(struct proto_hdr *hdr, uint32_t fid,
-					  uint8_t *bytes);
+					  const uint8_t *bytes);
 extern void proto_field_set_default_u8(struct proto_hdr *hdr, uint32_t fid,
 				       uint8_t val);
 extern void proto_field_set_default_u16(struct proto_hdr *hdr, uint32_t fid,

@@ -12,11 +12,12 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <signal.h>
 #include <stdint.h>
-#include <errno.h>
 #include <stdbool.h>
+#include <errno.h>
 #include <libgen.h>
+#include <signal.h>
+#include <unistd.h>
 #include <net/if_arp.h>
 #include <netinet/in.h>
 #include <linux/icmp.h>
@@ -151,6 +152,16 @@ static void realloc_packet(void)
 struct packet *current_packet(void)
 {
 	return &packets[packet_last];
+}
+
+uint32_t current_packet_id(void)
+{
+	return packet_last;
+}
+
+struct packet *packet_get(uint32_t id)
+{
+	return &packets[id];
 }
 
 static void set_byte(uint8_t val)
@@ -994,11 +1005,21 @@ static void dump_conf(void)
 
 void cleanup_packets(void)
 {
-	size_t i;
+	size_t i, j;
 
 	for (i = 0; i < plen; ++i) {
-		if (packets[i].len > 0)
-			xfree(packets[i].payload);
+		struct packet *pkt = &packets[i];
+
+		if (pkt->len > 0)
+			xfree(pkt->payload);
+
+		for (j = 0; j < pkt->headers_count; j++) {
+			struct proto_hdr *hdr = pkt->headers[j];
+
+			if (hdr->fields)
+				xfree(hdr->fields);
+			xfree(hdr);
+		}
 	}
 
 	free(packets);
@@ -1016,6 +1037,11 @@ void compile_packets(char *file, bool verbose, unsigned int cpu,
 {
 	char tmp_file[128];
 	int ret = -1;
+
+	if (access(file, R_OK)) {
+		fprintf(stderr, "Cannot access %s: %s!\n", file, strerror(errno));
+		die();
+	}
 
 	memset(tmp_file, 0, sizeof(tmp_file));
 	our_cpu = cpu;

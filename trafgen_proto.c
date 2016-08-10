@@ -22,17 +22,17 @@
 #define field_unmask_and_unshift(f, v) (((v) & \
 		((f)->mask ? (f)->mask : (0xffffffff))) >> (f)->shift)
 
-static struct proto_ctx ctx;
+struct ctx {
+	const char *dev;
+};
+static struct ctx ctx;
 
-#define PROTO_MAX_LAYERS	16
-
-static struct proto_hdr *headers[PROTO_MAX_LAYERS];
-static size_t headers_count;
-
-static struct proto_hdr *registered;
+static const struct proto_hdr *registered[__PROTO_MAX];
 
 struct proto_hdr *proto_lower_header(struct proto_hdr *hdr)
 {
+	struct proto_hdr **headers = current_packet()->headers;
+	size_t headers_count = current_packet()->headers_count;
 	struct proto_hdr *lower = NULL;
 	size_t i;
 
@@ -49,24 +49,19 @@ struct proto_hdr *proto_lower_header(struct proto_hdr *hdr)
 
 uint8_t *proto_header_ptr(struct proto_hdr *hdr)
 {
-	return &current_packet()->payload[hdr->pkt_offset];
+	return &packet_get(hdr->pkt_id)->payload[hdr->pkt_offset];
 }
 
-static struct proto_hdr *proto_header_by_id(enum proto_id id)
+static const struct proto_hdr *proto_header_by_id(enum proto_id id)
 {
-	struct proto_hdr *p = registered;
-
-	for (; p; p = p->next)
-		if (p->id == id)
-			return p;
-
-	panic("Can't lookup proto by id %u\n", id);
+	bug_on(id >= __PROTO_MAX);
+	return registered[id];
 }
 
 void proto_header_register(struct proto_hdr *hdr)
 {
-	hdr->next = registered;
-	registered = hdr;
+	bug_on(hdr->id >= __PROTO_MAX);
+	registered[hdr->id] = hdr;
 
 	hdr->fields = NULL;
 	hdr->fields_count = 0;
@@ -81,7 +76,7 @@ static void proto_fields_realloc(struct proto_hdr *hdr, size_t count)
 void proto_header_fields_add(struct proto_hdr *hdr,
 			     const struct proto_field *fields, size_t count)
 {
-	struct packet *pkt = current_packet();
+	struct packet *pkt = packet_get(hdr->pkt_id);
 	struct proto_field *f;
 	int i;
 
@@ -99,6 +94,7 @@ void proto_header_fields_add(struct proto_hdr *hdr,
 		f->shift = fields[i].shift;
 		f->mask = fields[i].mask;
 		f->pkt_offset = hdr->pkt_offset + fields[i].offset;
+		f->hdr = hdr;
 
 		if (f->pkt_offset + f->len > pkt->len) {
 			hdr->len += f->len;
@@ -109,13 +105,12 @@ void proto_header_fields_add(struct proto_hdr *hdr,
 
 static struct proto_field *proto_field_by_id(struct proto_hdr *hdr, uint32_t fid)
 {
-	int i;
+	/* Assume the fields are stored in the same order as the respective
+	 * enum, so the index can be used for faster lookup here.
+	 */
+	bug_on(hdr->fields[fid].id != fid);
 
-	for (i = 0; i < hdr->fields_count; i++)
-		if (hdr->fields[i].id == fid)
-			return &hdr->fields[i];
-
-	panic("Failed lookup field id %u for proto id %u\n", fid, hdr->id);
+	return &hdr->fields[fid];
 }
 
 bool proto_field_is_set(struct proto_hdr *hdr, uint32_t fid)
@@ -127,18 +122,21 @@ bool proto_field_is_set(struct proto_hdr *hdr, uint32_t fid)
 
 struct proto_hdr *proto_header_init(enum proto_id pid)
 {
-	struct proto_hdr *hdr = proto_header_by_id(pid);
+	struct proto_hdr **headers = current_packet()->headers;
+	const struct proto_hdr *hdr = proto_header_by_id(pid);
 	struct proto_hdr *new_hdr;
 
-	bug_on(headers_count >= PROTO_MAX_LAYERS);
+	bug_on(current_packet()->headers_count >= PROTO_MAX_LAYERS);
 
 	new_hdr = xmalloc(sizeof(*new_hdr));
 	memcpy(new_hdr, hdr, sizeof(*new_hdr));
 
+	new_hdr->pkt_id = current_packet_id();
+
 	if (new_hdr->header_init)
 		new_hdr->header_init(new_hdr);
 
-	headers[headers_count++] = new_hdr;
+	headers[current_packet()->headers_count++] = new_hdr;
 	return new_hdr;
 }
 
@@ -152,9 +150,10 @@ struct proto_hdr *proto_lower_default_add(struct proto_hdr *hdr,
 					  enum proto_id pid)
 {
 	struct proto_hdr *current;
+	size_t headers_count = current_packet()->headers_count;
 
 	if (headers_count > 0) {
-		current = headers[headers_count - 1];
+		current = current_packet()->headers[headers_count - 1];
 
 		if (current->layer >= proto_header_by_id(pid)->layer)
 			goto set_proto;
@@ -172,7 +171,8 @@ set_proto:
 }
 
 static void __proto_field_set_bytes(struct proto_hdr *hdr, uint32_t fid,
-				    uint8_t *bytes, bool is_default, bool is_be)
+				    const uint8_t *bytes, bool is_default,
+				    bool is_be)
 {
 	struct proto_field *field;
 	uint8_t *payload, *p8;
@@ -187,7 +187,7 @@ static void __proto_field_set_bytes(struct proto_hdr *hdr, uint32_t fid,
 	if (is_default && field->is_set)
 		return;
 
-	payload = &current_packet()->payload[field->pkt_offset];
+	payload = &packet_get(hdr->pkt_id)->payload[field->pkt_offset];
 
 	if (field->len == 1) {
 		p8 = payload;
@@ -225,16 +225,15 @@ static void __proto_field_set_bytes(struct proto_hdr *hdr, uint32_t fid,
 		field->is_set = true;
 }
 
-void proto_field_set_bytes(struct proto_hdr *hdr, uint32_t fid, uint8_t *bytes)
+void proto_field_set_bytes(struct proto_hdr *hdr, uint32_t fid,
+			   const uint8_t *bytes)
 {
 	__proto_field_set_bytes(hdr, fid, bytes, false, false);
 }
 
 static uint8_t *__proto_field_get_bytes(struct proto_field *field)
 {
-	struct packet *pkt = current_packet();
-
-	return &pkt->payload[field->pkt_offset];
+	return &packet_get(field->hdr->pkt_id)->payload[field->pkt_offset];
 }
 
 void proto_field_set_u8(struct proto_hdr *hdr, uint32_t fid, uint8_t val)
@@ -276,7 +275,8 @@ uint32_t proto_field_get_u32(struct proto_hdr *hdr, uint32_t fid)
 	return field_unmask_and_unshift(field, be32_to_cpu(val));
 }
 
-void proto_field_set_default_bytes(struct proto_hdr *hdr, uint32_t fid, uint8_t *bytes)
+void proto_field_set_default_bytes(struct proto_hdr *hdr, uint32_t fid,
+				   const uint8_t *bytes)
 {
 	__proto_field_set_bytes(hdr, fid, bytes, true, false);
 }
@@ -325,10 +325,7 @@ static void __proto_field_set_dev_mac(struct proto_hdr *hdr, uint32_t fid,
 	if (proto_field_is_set(hdr, fid))
 		return;
 
-	if (!hdr->ctx->dev)
-		panic("Device is not specified\n");
-
-	ret = device_hw_address(hdr->ctx->dev, mac, sizeof(mac));
+	ret = device_hw_address(ctx.dev, mac, sizeof(mac));
 	if (ret < 0)
 		panic("Could not get device hw address\n");
 
@@ -355,7 +352,7 @@ static void __proto_field_set_dev_ipv4(struct proto_hdr *hdr, uint32_t fid,
 	if (proto_field_is_set(hdr, fid))
 		return;
 
-	ret = device_address(hdr->ctx->dev, AF_INET, &ss);
+	ret = device_address(ctx.dev, AF_INET, &ss);
 	if (ret < 0)
 		panic("Could not get device IPv4 address\n");
 
@@ -383,7 +380,7 @@ static void __proto_field_set_dev_ipv6(struct proto_hdr *hdr, uint32_t fid,
 	if (proto_field_is_set(hdr, fid))
 		return;
 
-	ret = device_address(hdr->ctx->dev, AF_INET6, &ss);
+	ret = device_address(ctx.dev, AF_INET6, &ss);
 	if (ret < 0)
 		panic("Could not get device IPv6 address\n");
 
@@ -403,20 +400,17 @@ void proto_field_set_default_dev_ipv6(struct proto_hdr *hdr, uint32_t fid)
 
 void protos_init(const char *dev)
 {
-	struct proto_hdr *p;
-
 	ctx.dev = dev;
 
 	protos_l2_init();
 	protos_l3_init();
 	protos_l4_init();
-
-	for (p = registered; p; p = p->next)
-		p->ctx = &ctx;
 }
 
 void proto_packet_finish(void)
 {
+	struct proto_hdr **headers = current_packet()->headers;
+	size_t headers_count = current_packet()->headers_count;
 	ssize_t i;
 
 	/* Go down from upper layers to do last calculations (checksum) */
@@ -426,17 +420,4 @@ void proto_packet_finish(void)
 		if (p->packet_finish)
 			p->packet_finish(p);
 	}
-
-	for (i = 0; i < headers_count; i++) {
-		struct proto_hdr *p = headers[i];
-
-		if (p->fields) {
-			xfree(p->fields);
-			p->fields_count = 0;
-		}
-
-		xfree(headers[i]);
-	}
-
-	headers_count = 0;
 }
