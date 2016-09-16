@@ -970,26 +970,26 @@ static void print_flow_peer_info(const struct flow_entry *n, enum flow_direction
 	ui_table_col_color_set(&flows_tbl, TBL_FLOW_RATE, counters_color);
 
 	/* Reverse DNS/IP */
-	ui_table_row_print(&flows_tbl, TBL_FLOW_ADDRESS,
-			    SELFLD(dir, rev_dns_src, rev_dns_dst));
+	ui_table_row_col_set(&flows_tbl, TBL_FLOW_ADDRESS,
+			      SELFLD(dir, rev_dns_src, rev_dns_dst));
 
 	/* Application port */
-	ui_table_row_print(&flows_tbl, TBL_FLOW_PORT,
-			    flow_port2str(n, tmp, sizeof(tmp), dir));
+	ui_table_row_col_set(&flows_tbl, TBL_FLOW_PORT,
+			      flow_port2str(n, tmp, sizeof(tmp), dir));
 
 	/* GEO */
-	ui_table_row_print(&flows_tbl, TBL_FLOW_GEO,
-			    SELFLD(dir, country_code_src, country_code_dst));
+	ui_table_row_col_set(&flows_tbl, TBL_FLOW_GEO,
+			      SELFLD(dir, country_code_src, country_code_dst));
 
 	/* Bytes */
-	ui_table_row_print(&flows_tbl, TBL_FLOW_BYTES,
-			    bandw2str(SELFLD(dir, bytes_src, bytes_dst),
-			              tmp, sizeof(tmp) - 1));
+	ui_table_row_col_set(&flows_tbl, TBL_FLOW_BYTES,
+			      bandw2str(SELFLD(dir, bytes_src, bytes_dst),
+					tmp, sizeof(tmp) - 1));
 
 	/* Rate bytes */
-	ui_table_row_print(&flows_tbl, TBL_FLOW_RATE,
-			    rate2str(SELFLD(dir, rate_bytes_src, rate_bytes_dst),
-			              tmp, sizeof(tmp) - 1));
+	ui_table_row_col_set(&flows_tbl, TBL_FLOW_RATE,
+			      rate2str(SELFLD(dir, rate_bytes_src, rate_bytes_dst),
+				       tmp, sizeof(tmp) - 1));
 }
 
 static void draw_flow_entry(const struct flow_entry *n)
@@ -999,28 +999,37 @@ static void draw_flow_entry(const struct flow_entry *n)
 	ui_table_row_add(&flows_tbl);
 
 	/* Application */
-	ui_table_row_print(&flows_tbl, TBL_FLOW_PROCESS, n->procname);
+	ui_table_row_col_set(&flows_tbl, TBL_FLOW_PROCESS, n->procname);
 
 	/* PID */
 	slprintf(tmp, sizeof(tmp), "%.d", n->procnum);
-	ui_table_row_print(&flows_tbl, TBL_FLOW_PID, tmp);
+	ui_table_row_col_set(&flows_tbl, TBL_FLOW_PID, tmp);
 
 	/* L4 protocol */
-	ui_table_row_print(&flows_tbl, TBL_FLOW_PROTO, l4proto2str[n->l4_proto]);
+	ui_table_row_col_set(&flows_tbl, TBL_FLOW_PROTO, l4proto2str[n->l4_proto]);
 
 	/* L4 protocol state */
-	ui_table_row_print(&flows_tbl, TBL_FLOW_STATE, flow_state2str(n));
+	ui_table_row_col_set(&flows_tbl, TBL_FLOW_STATE, flow_state2str(n));
 
 	/* Time */
 	time2str(n->timestamp_start, tmp, sizeof(tmp));
-	ui_table_row_print(&flows_tbl, TBL_FLOW_TIME, tmp);
+	ui_table_row_col_set(&flows_tbl, TBL_FLOW_TIME, tmp);
 
 	print_flow_peer_info(n, show_src ? FLOW_DIR_SRC : FLOW_DIR_DST);
+
+	ui_table_row_show(&flows_tbl);
 
 	if (show_src) {
 		ui_table_row_add(&flows_tbl);
 
+		ui_table_row_col_set(&flows_tbl, TBL_FLOW_PROCESS, "");
+		ui_table_row_col_set(&flows_tbl, TBL_FLOW_PID, "");
+		ui_table_row_col_set(&flows_tbl, TBL_FLOW_PROTO, "");
+		ui_table_row_col_set(&flows_tbl, TBL_FLOW_STATE, "");
+		ui_table_row_col_set(&flows_tbl, TBL_FLOW_TIME, "");
+
 		print_flow_peer_info(n, FLOW_DIR_DST);
+		ui_table_row_show(&flows_tbl);
 	}
 }
 
@@ -1181,22 +1190,24 @@ static void draw_help(void)
 
 	mvaddnstr(row + 4, col + 3, "Up, u, k      Move up", -1);
 	mvaddnstr(row + 5, col + 3, "Down, d, j    Move down", -1);
-	mvaddnstr(row + 6, col + 3, "?             Toggle help window", -1);
-	mvaddnstr(row + 7, col + 3, "q, Ctrl+C     Quit", -1);
+	mvaddnstr(row + 6, col + 3, "Left,l        Scroll left", -1);
+	mvaddnstr(row + 7, col + 3, "Right,h       Scroll right", -1);
+	mvaddnstr(row + 8, col + 3, "?             Toggle help window", -1);
+	mvaddnstr(row + 9, col + 3, "q, Ctrl+C     Quit", -1);
 
 	attron(A_BOLD | A_UNDERLINE);
-	mvaddnstr(row + 9, col + 2, "Display Settings", -1);
+	mvaddnstr(row + 11, col + 2, "Display Settings", -1);
 	attroff(A_BOLD | A_UNDERLINE);
 
-	mvaddnstr(row + 11, col + 3, "b     Toggle rate units (bits/bytes)", -1);
-	mvaddnstr(row + 12, col + 3, "a     Toggle display of active flows (rate > 0) only", -1);
-	mvaddnstr(row + 13, col + 3, "s     Toggle show source peer info", -1);
+	mvaddnstr(row + 13, col + 3, "b     Toggle rate units (bits/bytes)", -1);
+	mvaddnstr(row + 14, col + 3, "a     Toggle display of active flows (rate > 0) only", -1);
+	mvaddnstr(row + 15, col + 3, "s     Toggle show source peer info", -1);
 
-	mvaddnstr(row + 15, col + 3, "T     Toggle display TCP flows", -1);
-	mvaddnstr(row + 16, col + 3, "U     Toggle display UDP flows", -1);
-	mvaddnstr(row + 17, col + 3, "D     Toggle display DCCP flows", -1);
-	mvaddnstr(row + 18, col + 3, "I     Toggle display ICMP flows", -1);
-	mvaddnstr(row + 19, col + 3, "S     Toggle display SCTP flows", -1);
+	mvaddnstr(row + 17, col + 3, "T     Toggle display TCP flows", -1);
+	mvaddnstr(row + 18, col + 3, "U     Toggle display UDP flows", -1);
+	mvaddnstr(row + 19, col + 3, "D     Toggle display DCCP flows", -1);
+	mvaddnstr(row + 20, col + 3, "I     Toggle display ICMP flows", -1);
+	mvaddnstr(row + 21, col + 3, "S     Toggle display SCTP flows", -1);
 }
 
 static void draw_header(WINDOW *screen)
@@ -1322,6 +1333,14 @@ static void presenter(void)
 			skip_lines++;
 			if (skip_lines > SCROLL_MAX)
 				skip_lines = SCROLL_MAX;
+			break;
+		case KEY_LEFT:
+		case 'h':
+			ui_table_event_send(&flows_tbl, UI_EVT_SCROLL_LEFT);
+			break;
+		case KEY_RIGHT:
+		case 'l':
+			ui_table_event_send(&flows_tbl, UI_EVT_SCROLL_RIGHT);
 			break;
 		case 'b':
 			if (rate_type == RATE_BYTES)

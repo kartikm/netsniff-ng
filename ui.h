@@ -6,9 +6,20 @@
 
 #include "list.h"
 
+enum ui_event_id {
+	UI_EVT_SCROLL_LEFT,
+	UI_EVT_SCROLL_RIGHT,
+};
+
 enum ui_align {
 	UI_ALIGN_LEFT,
 	UI_ALIGN_RIGHT,
+};
+
+struct ui_text {
+	chtype *str;
+	size_t slen;
+	size_t len;
 };
 
 struct ui_col {
@@ -26,10 +37,12 @@ struct ui_table {
 	int x;
 	int rows_y;
 	struct list_head cols;
+	struct ui_text *row;
 	int hdr_color;
 	int col_pad;
 	int width;
 	int height;
+	int scroll_x;
 };
 
 extern void ui_table_init(struct ui_table *tbl);
@@ -44,10 +57,13 @@ extern void ui_table_col_color_set(struct ui_table *tbl, int col_id, int color);
 extern void ui_table_col_align_set(struct ui_table *tbl, int col_id, enum ui_align align);
 
 extern void ui_table_row_add(struct ui_table *tbl);
-extern void ui_table_row_print(struct ui_table *tbl, uint32_t col_id,
-			       const char *str);
+extern void ui_table_row_show(struct ui_table *tbl);
+extern void ui_table_row_col_set(struct ui_table *tbl, uint32_t col_id,
+				 const char *str);
 
 extern void ui_table_header_color_set(struct ui_table *tbl, int color);
 extern void ui_table_header_print(struct ui_table *tbl);
+
+extern void ui_table_event_send(struct ui_table *tbl, enum ui_event_id id);
 
 #endif /* UI_H */
