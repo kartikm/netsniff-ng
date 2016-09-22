@@ -31,20 +31,25 @@ static const struct proto_ops *registered_ops[__PROTO_MAX];
 
 struct proto_hdr *proto_lower_header(struct proto_hdr *hdr)
 {
-	struct proto_hdr **headers = current_packet()->headers;
-	size_t headers_count = current_packet()->headers_count;
-	struct proto_hdr *lower = NULL;
-	size_t i;
+	struct packet *pkt = packet_get(hdr->pkt_id);
+	struct proto_hdr **headers = &pkt->headers[0];
 
-	if (headers_count == 0)
+	if (hdr->index == 0)
 		return NULL;
 
-	for (i = 1, lower = headers[0]; i < headers_count; i++) {
-		if (headers[i] == hdr)
-			return headers[i - 1];
-	}
+	return headers[hdr->index - 1];
+}
 
-	return lower;
+struct proto_hdr *proto_upper_header(struct proto_hdr *hdr)
+{
+	struct packet *pkt = packet_get(hdr->pkt_id);
+	struct proto_hdr **headers = &pkt->headers[0];
+	size_t headers_count = pkt->headers_count;
+
+	if (hdr->index == headers_count - 1)
+		return NULL;
+
+	return headers[hdr->index + 1];
 }
 
 uint8_t *proto_header_ptr(struct proto_hdr *hdr)
@@ -102,7 +107,7 @@ void proto_header_fields_add(struct proto_hdr *hdr,
 	}
 }
 
-static struct proto_field *proto_field_by_id(struct proto_hdr *hdr, uint32_t fid)
+struct proto_field *proto_field_by_id(struct proto_hdr *hdr, uint32_t fid)
 {
 	/* Assume the fields are stored in the same order as the respective
 	 * enum, so the index can be used for faster lookup here.
@@ -121,11 +126,12 @@ bool proto_field_is_set(struct proto_hdr *hdr, uint32_t fid)
 
 struct proto_hdr *proto_header_push(enum proto_id pid)
 {
-	struct proto_hdr **headers = current_packet()->headers;
+	struct packet *pkt = current_packet();
+	struct proto_hdr **headers = &pkt->headers[0];
 	const struct proto_ops *ops = proto_ops_by_id(pid);
 	struct proto_hdr *hdr;
 
-	bug_on(current_packet()->headers_count >= PROTO_MAX_LAYERS);
+	bug_on(pkt->headers_count >= PROTO_MAX_LAYERS);
 
 	hdr = xzmalloc(sizeof(*hdr));
 	hdr->ops = ops;
@@ -134,8 +140,11 @@ struct proto_hdr *proto_header_push(enum proto_id pid)
 	if (ops && ops->header_init)
 		ops->header_init(hdr);
 
-	headers[current_packet()->headers_count++] = hdr;
+	/* This is very important to have it after header_init as
+	 * pkt->headers_count might be changed by adding default lower headers */
+	hdr->index = pkt->headers_count;
 
+	headers[pkt->headers_count++] = hdr;
 	return hdr;
 }
 
@@ -409,6 +418,19 @@ void protos_init(const char *dev)
 	protos_l4_init();
 }
 
+void proto_packet_update(uint32_t idx)
+{
+	struct packet *pkt = packet_get(idx);
+	ssize_t i;
+
+	for (i = pkt->headers_count - 1; i >= 0; i--) {
+		struct proto_hdr *hdr = pkt->headers[i];
+
+		if (hdr->ops->packet_update)
+			hdr->ops->packet_update(hdr);
+	}
+}
+
 void proto_packet_finish(void)
 {
 	struct proto_hdr **headers = current_packet()->headers;
@@ -423,4 +445,104 @@ void proto_packet_finish(void)
 		if (ops && ops->packet_finish)
 			ops->packet_finish(hdr);
 	}
+}
+
+static inline uint32_t field_inc(struct proto_field *field)
+{
+	uint32_t min = field->func.min;
+	uint32_t max = field->func.max;
+	uint32_t val = field->func.val;
+	uint32_t inc = field->func.inc;
+	uint32_t next;
+
+	next = (val + inc) % (max + 1);
+	field->func.val = max(next, min);
+
+	return val;
+}
+
+static void field_inc_func(struct proto_field *field)
+{
+	if (field->len == 1) {
+		proto_field_set_u8(field->hdr, field->id, field_inc(field));
+	} else if (field->len == 2) {
+		proto_field_set_be16(field->hdr, field->id, field_inc(field));
+	} else if (field->len == 4) {
+		proto_field_set_be32(field->hdr, field->id, field_inc(field));
+	} else if (field->len > 4) {
+		uint8_t *bytes = __proto_field_get_bytes(field);
+
+		bytes += field->len - 4;
+
+		*(uint32_t *)bytes = bswap_32(field_inc(field));
+	}
+}
+
+static inline uint32_t field_rand(struct proto_field *field)
+{
+	return field->func.min + (rand() % ((field->func.max - field->func.min) + 1));
+}
+
+static void field_rnd_func(struct proto_field *field)
+{
+	if (field->len == 1) {
+		proto_field_set_u8(field->hdr, field->id,
+				    (uint8_t) field_rand(field));
+	} else if (field->len == 2) {
+		proto_field_set_be16(field->hdr, field->id,
+				    (uint16_t) field_rand(field));
+	} else if (field->len == 4) {
+		proto_field_set_be32(field->hdr, field->id,
+				    (uint32_t) field_rand(field));
+	} else if (field->len > 4) {
+		uint8_t *bytes = __proto_field_get_bytes(field);
+		uint32_t i;
+
+		for (i = 0; i < field->len; i++)
+			bytes[i] = (uint8_t) field_rand(field);
+	}
+}
+
+void proto_field_func_add(struct proto_hdr *hdr, uint32_t fid,
+			  struct proto_field_func *func)
+{
+	struct proto_field *field = proto_field_by_id(hdr, fid);
+
+	bug_on(!func);
+
+	field->func.update_field = func->update_field;
+	field->func.type = func->type;
+	field->func.max = func->max ?: UINT32_MAX - 1;
+	field->func.min = func->min;
+	field->func.inc = func->inc;
+
+	if (func->type & PROTO_FIELD_FUNC_INC) {
+		if (func->type & PROTO_FIELD_FUNC_MIN)
+			field->func.val = func->min;
+		else if (field->len == 1)
+			field->func.val = proto_field_get_u8(hdr, fid);
+		else if (field->len == 2)
+			field->func.val = proto_field_get_u16(hdr, fid);
+		else if (field->len == 4)
+			field->func.val = proto_field_get_u32(hdr, fid);
+		else if (field->len > 4) {
+			uint8_t *bytes = __proto_field_get_bytes(field);
+
+			bytes += field->len - 4;
+			field->func.val = bswap_32(*(uint32_t *)bytes);
+		}
+
+		field->func.update_field = field_inc_func;
+	} else if (func->type & PROTO_FIELD_FUNC_RND) {
+		field->func.update_field = field_rnd_func;
+	}
+}
+
+void proto_field_dyn_apply(struct proto_field *field)
+{
+	if (field->func.update_field)
+		field->func.update_field(field);
+
+	if (field->hdr->ops->field_changed)
+		field->hdr->ops->field_changed(field);
 }

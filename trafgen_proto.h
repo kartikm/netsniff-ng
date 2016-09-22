@@ -27,6 +27,7 @@ enum proto_layer {
 	PROTO_L4,
 };
 
+struct proto_field;
 struct proto_hdr;
 
 struct proto_ops {
@@ -35,7 +36,9 @@ struct proto_ops {
 
 	void (*header_init)(struct proto_hdr *hdr);
 	void (*header_finish)(struct proto_hdr *hdr);
+	void (*field_changed)(struct proto_field *field);
 	void (*packet_finish)(struct proto_hdr *hdr);
+	void (*packet_update)(struct proto_hdr *hdr);
 	void (*set_next_proto)(struct proto_hdr *hdr, enum proto_id pid);
 };
 
@@ -43,9 +46,27 @@ struct proto_hdr {
 	const struct proto_ops *ops;
 	uint16_t pkt_offset;
 	uint32_t pkt_id;
+	uint32_t index;
 	struct proto_field *fields;
 	size_t fields_count;
+	bool is_csum_valid;
 	size_t len;
+};
+
+enum proto_field_func_t {
+	PROTO_FIELD_FUNC_INC = 1 << 0,
+	PROTO_FIELD_FUNC_MIN = 1 << 1,
+	PROTO_FIELD_FUNC_RND = 1 << 2,
+};
+
+struct proto_field_func {
+	enum proto_field_func_t type;
+	uint32_t min;
+	uint32_t max;
+	int32_t inc;
+	uint32_t val;
+
+	void (*update_field)(struct proto_field *field);
 };
 
 struct proto_field {
@@ -56,6 +77,7 @@ struct proto_field {
 	/* might be negative (e.g. VLAN TPID field) */
 	int16_t offset;
 
+	struct proto_field_func func;
 	bool is_set;
 	uint16_t pkt_offset;
 	struct proto_hdr *hdr;
@@ -67,10 +89,13 @@ extern void proto_ops_register(const struct proto_ops *ops);
 extern struct proto_hdr *proto_header_push(enum proto_id pid);
 extern void proto_header_finish(struct proto_hdr *hdr);
 extern void proto_packet_finish(void);
+extern void proto_packet_update(uint32_t idx);
+
 extern struct proto_hdr *proto_lower_default_add(struct proto_hdr *hdr,
 						 enum proto_id pid);
 
 extern struct proto_hdr *proto_lower_header(struct proto_hdr *hdr);
+extern struct proto_hdr *proto_upper_header(struct proto_hdr *hdr);
 extern uint8_t *proto_header_ptr(struct proto_hdr *hdr);
 
 extern void proto_header_fields_add(struct proto_hdr *hdr,
@@ -112,5 +137,12 @@ extern void proto_field_set_default_dev_ipv4(struct proto_hdr *hdr, uint32_t fid
 
 extern void proto_field_set_dev_ipv6(struct proto_hdr *hdr, uint32_t fid);
 extern void proto_field_set_default_dev_ipv6(struct proto_hdr *hdr, uint32_t fid);
+
+extern void proto_field_dyn_apply(struct proto_field *field);
+
+extern void proto_field_func_add(struct proto_hdr *hdr, uint32_t fid,
+				 struct proto_field_func *func);
+
+extern struct proto_field *proto_field_by_id(struct proto_hdr *hdr, uint32_t fid);
 
 #endif /* TRAFGEN_PROTO_H */
