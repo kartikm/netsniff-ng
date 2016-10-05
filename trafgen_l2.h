@@ -7,6 +7,32 @@ enum eth_field {
 	ETH_TYPE,
 };
 
+enum pause_field {
+	PAUSE_OPCODE,
+	PAUSE_TIME,
+};
+
+enum pfc_field {
+	PFC_OPCODE,
+	PFC_PRIO,
+	PFC_PRIO_0,
+	PFC_PRIO_1,
+	PFC_PRIO_2,
+	PFC_PRIO_3,
+	PFC_PRIO_4,
+	PFC_PRIO_5,
+	PFC_PRIO_6,
+	PFC_PRIO_7,
+	PFC_TIME_0,
+	PFC_TIME_1,
+	PFC_TIME_2,
+	PFC_TIME_3,
+	PFC_TIME_4,
+	PFC_TIME_5,
+	PFC_TIME_6,
+	PFC_TIME_7,
+};
+
 enum arp_field {
 	ARP_HTYPE,
 	ARP_PTYPE,

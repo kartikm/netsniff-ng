@@ -461,6 +461,7 @@ static void proto_field_expr_eval(void)
 %token K_CPU K_CSUMIP K_CSUMUDP K_CSUMTCP K_CSUMUDP6 K_CSUMTCP6 K_CONST8 K_CONST16 K_CONST32 K_CONST64
 
 %token K_DADDR K_SADDR K_ETYPE K_TYPE
+%token K_TIME K_PRIO
 %token K_OPER K_SHA K_SPA K_THA K_TPA K_REQUEST K_REPLY K_PTYPE K_HTYPE
 %token K_PROT K_TTL K_DSCP K_ECN K_TOS K_LEN K_ID K_FLAGS K_FRAG K_IHL K_VER K_CSUM K_DF K_MF
 %token K_FLOW K_NEXT_HDR K_HOP_LIMIT
@@ -473,6 +474,8 @@ static void proto_field_expr_eval(void)
 %token K_ADDR K_MTU
 
 %token K_ETH
+%token K_PAUSE
+%token K_PFC
 %token K_VLAN K_MPLS
 %token K_ARP
 %token K_IP4 K_IP6
@@ -699,6 +702,8 @@ ddec
 
 proto
 	: eth_proto { }
+	| pause_proto { }
+	| pfc_proto { }
 	| vlan_proto { }
 	| mpls_proto { }
 	| arp_proto { }
@@ -776,6 +781,66 @@ eth_field
 
 eth_expr
 	: eth_field skip_white '=' skip_white field_expr
+		{ proto_field_expr_eval(); }
+	;
+
+pause_proto
+	: pause '(' pause_param_list ')' { }
+	;
+
+pause
+	: K_PAUSE { proto_add(PROTO_PAUSE); }
+	;
+
+pause_param_list
+	: { }
+	| pause_expr { }
+	| pause_expr delimiter pause_param_list { }
+	;
+
+pause_field
+	: K_CODE { proto_field_set(PAUSE_OPCODE); }
+	| K_TIME { proto_field_set(PAUSE_TIME); }
+	;
+
+pause_expr
+	: pause_field skip_white '=' skip_white field_expr
+		{ proto_field_expr_eval(); }
+	;
+
+pfc_proto
+	: pfc '(' pfc_param_list ')' { }
+	;
+
+pfc
+	: K_PFC { proto_add(PROTO_PFC); }
+	;
+
+pfc_param_list
+	: { }
+	| pfc_expr { }
+	| pfc_expr delimiter pfc_param_list { }
+	;
+
+pfc_field
+	: K_CODE { proto_field_set(PFC_OPCODE); }
+	| K_PRIO { proto_field_set(PFC_PRIO); }
+	| K_PRIO '(' number ')'
+		{ if ($3 > 7) {
+		      yyerror("pfc: Invalid prio(index) parameter");
+		      panic("pfc: prio(0)..prio(7) is allowed only\n");
+		  }
+		  proto_field_set(PFC_PRIO_0 + $3); }
+	| K_TIME '(' number ')'
+		{ if ($3 > 7) {
+		      yyerror("pfc: Invalid time(index) parameter");
+		      panic("pfc: time(0)..time(7) is allowed only\n");
+		  }
+		  proto_field_set(PFC_TIME_0 + $3); }
+	;
+
+pfc_expr
+	: pfc_field skip_white '=' skip_white field_expr
 		{ proto_field_expr_eval(); }
 	;
 

@@ -243,7 +243,7 @@ this when running this with trafgen in combination with \-V):
 There are a couple of helper functions in trafgen's language to make life easier
 to write configurations:
 .PP
-i) Fill with garbage functions:
+.B i) Fill with garbage functions:
 .PP
    byte fill function:      fill(<content>, <times>): fill(0xca, 128)
    compile-time random:     rnd(<times>): rnd(128), rnd()
@@ -253,7 +253,7 @@ i) Fill with garbage functions:
    runtime counter (1byte): dinc(<min-val>, <max-val>, <increment>)
                             ddec(<min-val>, <max-val>, <decrement>)
 .PP
-ii) Checksum helper functions (packet offsets start with 0):
+.B ii) Checksum helper functions (packet offsets start with 0):
 .PP
    IP/ICMP checksum:        csumip/csumicmp(<off-from>, <off-to>)
    UDP checksum:            csumudp(<off-iphdr>, <off-udpdr>)
@@ -261,7 +261,7 @@ ii) Checksum helper functions (packet offsets start with 0):
    UDP checksum (IPv6):     csumudp6(<off-ip6hdr>, <off-udpdr>)
    TCP checksum (IPv6):     csumtcp6(<off-ip6hdr>, <off-tcphdr>)
 .PP
-iii) Multibyte functions, compile-time expression evaluation:
+.B iii) Multibyte functions, compile-time expression evaluation:
 .PP
    const8(<content>), c8(<content>), const16(<content>), c16(<content>),
    const32(<content>), c32(<content>), const64(<content>), c64(<content>)
@@ -271,14 +271,16 @@ configuration, e.g. const16(0xaa) will result in ''00 aa''. Within c*()
 functions, it is possible to do some arithmetics: -,+,*,/,%,&,|,<<,>>,^
 E.g. const16((((1<<8)+0x32)|0b110)*2) will be evaluated to ''02 6c''.
 .PP
-iv) Protocol header functions:
+.B iv) Protocol header functions:
+.in +4
 The protocol header functions allow to fill protocol header fields by
 using following generic syntax:
-.in +8
 .sp
+.in +4
 <proto>(<field>=<value>,<field2>=<value2>,...,<field3>,...)
+.in -4
 .sp
-.in -8
+.in -4
 .in +4
 If a field is not specified, then a default value will be used (usually 0).
 Protocol fields might be set in any order. However, the offset of the fields in
@@ -350,6 +352,55 @@ Supported protocol headers:
 - Ethernet type (default: 0)
 .in -4
 
+.sp
+.I PAUSE (IEEE 802.3X)
+:
+.B pause(code=<number>, time=<number>)
+.sp
+.in +4
+.B code
+- MAC Control opcode (default: 0x0001)
+.sp
+.B time
+- Pause time (default: 0)
+.sp
+By default Ethernet header is added with a fields:
+.in +4
+.sp
+Ethernet type - 0x8808
+.sp
+Destination MAC address - 01:80:C2:00:00:01
+.in -4
+
+.in -4
+
+.sp
+.I PFC
+:
+.B pfc(pri|prio(<number>)=<number>, time(<number>)=<number>)
+.sp
+.in +4
+.B code
+- MAC Control opcode (default: 0x0101)
+.sp
+.B pri|prio
+- Priority enable vector (default: 0)
+.sp
+.B pri|prio(<number>)
+- Enable/disable (0 - disable, 1 - enable) pause for priority <number> (default: 0)
+.sp
+.B time(<number>)
+- Set pause time for priority <number> (default: 0)
+.sp
+By default Ethernet header is added with a fields:
+.in +4
+.sp
+Ethernet type - 0x8808
+.sp
+Destination MAC address - 01:80:C2:00:00:01
+.in -4
+
+.in -4
 .I VLAN
 :
 .B vlan(tpid=<number>, id=<number>, dei=<number>, tci=<number>, pcp=<number>, 1q, 1ad)
