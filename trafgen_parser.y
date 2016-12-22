@@ -74,13 +74,14 @@ extern size_t dlen;
 static int our_cpu, min_cpu = -1, max_cpu = -1;
 
 enum field_expr_type_t {
-	FIELD_EXPR_UNKNOWN,
-	FIELD_EXPR_NUMB,
-	FIELD_EXPR_MAC,
-	FIELD_EXPR_IP4_ADDR,
-	FIELD_EXPR_IP6_ADDR,
-	FIELD_EXPR_INC,
-	FIELD_EXPR_RND,
+	FIELD_EXPR_UNKNOWN	= 0,
+	FIELD_EXPR_NUMB		= 1 << 0,
+	FIELD_EXPR_MAC		= 1 << 1,
+	FIELD_EXPR_IP4_ADDR	= 1 << 2,
+	FIELD_EXPR_IP6_ADDR	= 1 << 3,
+	FIELD_EXPR_INC		= 1 << 4,
+	FIELD_EXPR_RND		= 1 << 5,
+	FIELD_EXPR_OFFSET	= 1 << 6,
 };
 
 struct proto_field_expr {
@@ -387,67 +388,91 @@ static void proto_add(enum proto_id pid)
 
 static void proto_field_set(uint32_t fid)
 {
-	field_expr.field = proto_field_by_id(hdr, fid);
+	memset(&field_expr, 0, sizeof(field_expr));
+	field_expr.field = proto_hdr_field_by_id(hdr, fid);
 }
 
 static void proto_field_func_setup(struct proto_field *field, struct proto_field_func *func)
 {
+	struct proto_field *field_copy;
 	struct packet_dyn *pkt_dyn;
 
-	proto_field_func_add(field->hdr, field->id, func);
+	field_copy = xmalloc(sizeof(*field));
+	memcpy(field_copy, field, sizeof(*field));
+
+	field_copy->pkt_offset += func->offset;
+	if (func->len)
+		field_copy->len = func->len;
+
+	proto_field_func_add(field_copy, func);
 
 	pkt_dyn = &packet_dyn[packetd_last];
 	pkt_dyn->flen++;
 	pkt_dyn->fields = xrealloc(pkt_dyn->fields, pkt_dyn->flen *
 				   sizeof(struct proto_field *));
-	pkt_dyn->fields[pkt_dyn->flen - 1] = field;
+
+	pkt_dyn->fields[pkt_dyn->flen - 1] = field_copy;
 }
 
 static void proto_field_expr_eval(void)
 {
 	struct proto_field *field = field_expr.field;
 
-	switch (field_expr.type) {
-	case FIELD_EXPR_NUMB:
+	if ((field_expr.type & FIELD_EXPR_OFFSET) &&
+			!((field_expr.type & FIELD_EXPR_INC) ||
+				(field_expr.type & FIELD_EXPR_RND))) {
+
+		panic("Field offset expression is valid only with function expression\n");
+	}
+
+	if (field_expr.type & FIELD_EXPR_NUMB) {
 		if (field->len == 1)
-			proto_field_set_u8(hdr, field->id, field_expr.val.number);
+			proto_hdr_field_set_u8(hdr, field->id, field_expr.val.number);
 		else if (field->len == 2)
-			proto_field_set_be16(hdr, field->id, field_expr.val.number);
+			proto_hdr_field_set_be16(hdr, field->id, field_expr.val.number);
 		else if (field->len == 4)
-			proto_field_set_be32(hdr, field->id, field_expr.val.number);
+			proto_hdr_field_set_be32(hdr, field->id, field_expr.val.number);
 		else
-			bug();
-		break;
-
-	case FIELD_EXPR_MAC:
-		proto_field_set_bytes(hdr, field->id, field_expr.val.bytes);
-		break;
-
-	case FIELD_EXPR_IP4_ADDR:
-		proto_field_set_u32(hdr, field->id, field_expr.val.ip4_addr.s_addr);
-		break;
-
-	case FIELD_EXPR_IP6_ADDR:
-		proto_field_set_bytes(hdr, field->id,
+			proto_hdr_field_set_bytes(hdr, field->id, field_expr.val.bytes);
+	} else if (field_expr.type & FIELD_EXPR_MAC) {
+		proto_hdr_field_set_bytes(hdr, field->id, field_expr.val.bytes);
+	} else if (field_expr.type & FIELD_EXPR_IP4_ADDR) {
+		proto_hdr_field_set_u32(hdr, field->id, field_expr.val.ip4_addr.s_addr);
+	} else if (field_expr.type & FIELD_EXPR_IP6_ADDR) {
+		proto_hdr_field_set_bytes(hdr, field->id,
 			(uint8_t *)&field_expr.val.ip6_addr.s6_addr);
-		break;
+	} else if ((field_expr.type & FIELD_EXPR_INC) ||
+			(field_expr.type & FIELD_EXPR_RND)) {
 
-	case FIELD_EXPR_INC:
-	case FIELD_EXPR_RND:
 		if (field_expr.val.func.min
 			&& field_expr.val.func.min >= field_expr.val.func.max)
 			panic("dinc(): min(%u) can't be >= max(%u)\n",
 				field_expr.val.func.min, field_expr.val.func.max);
 
 		proto_field_func_setup(field, &field_expr.val.func);
-		break;
+	} else if ((field_expr.type & FIELD_EXPR_OFFSET) &&
+			!((field_expr.type & FIELD_EXPR_INC) ||
+				(field_expr.type & FIELD_EXPR_RND))) {
 
-	case FIELD_EXPR_UNKNOWN:
-	default:
+		panic("Field expression is valid only for function value expression\n");
+	} else {
 		bug();
 	}
 
 	memset(&field_expr, 0, sizeof(field_expr));
+}
+
+static void field_index_validate(struct proto_field *field, uint16_t index, size_t len)
+{
+	if (field_expr.field->len <= index) {
+		yyerror("Invalid [index] parameter");
+		panic("Index (%u) is bigger than field's length (%zu)\n",
+		       index, field->len);
+	}
+	if (len != 1 && len != 2 && len != 4) {
+		yyerror("Invalid [index:len] parameter");
+		panic("Invalid index length - 1,2 or 4 is only allowed\n");
+	}
 }
 
 %}
@@ -719,39 +744,52 @@ proto
 	;
 
 field_expr
-	: number { field_expr.type = FIELD_EXPR_NUMB;
+	: '[' skip_white number skip_white ']'
+		{ field_index_validate(field_expr.field, $3, 1);
+		  field_expr.type |= FIELD_EXPR_OFFSET;
+		  field_expr.val.func.offset = $3;
+		  field_expr.val.func.len = 1; }
+	| '[' skip_white number skip_white ':' skip_white number skip_white ']'
+		{ field_index_validate(field_expr.field, $3, $7);
+		  field_expr.type |= FIELD_EXPR_OFFSET;
+		  field_expr.val.func.offset = $3;
+		  field_expr.val.func.len = $7; }
+	;
+
+field_value_expr
+	: number { field_expr.type |= FIELD_EXPR_NUMB;
 		   field_expr.val.number = $1; }
-	| mac { field_expr.type = FIELD_EXPR_MAC;
+	| mac { field_expr.type |= FIELD_EXPR_MAC;
 		memcpy(field_expr.val.bytes, $1, sizeof(field_expr.val.bytes)); }
-	| ip4_addr { field_expr.type = FIELD_EXPR_IP4_ADDR;
+	| ip4_addr { field_expr.type |= FIELD_EXPR_IP4_ADDR;
 		     field_expr.val.ip4_addr = $1; }
-	| ip6_addr { field_expr.type = FIELD_EXPR_IP6_ADDR;
+	| ip6_addr { field_expr.type |= FIELD_EXPR_IP6_ADDR;
 		     field_expr.val.ip6_addr = $1; }
-	| K_DINC '(' ')' { field_expr.type = FIELD_EXPR_INC;
+	| K_DINC '(' ')' { field_expr.type |= FIELD_EXPR_INC;
 			   field_expr.val.func.type = PROTO_FIELD_FUNC_INC;
 			   field_expr.val.func.inc = 1; }
 	| K_DINC '(' number ')'
-			{ field_expr.type = FIELD_EXPR_INC;
+			{ field_expr.type |= FIELD_EXPR_INC;
 			  field_expr.val.func.type = PROTO_FIELD_FUNC_INC;
 			  field_expr.val.func.inc = $3; }
 	| K_DINC '(' number delimiter number ')'
-			{ field_expr.type = FIELD_EXPR_INC;
+			{ field_expr.type |= FIELD_EXPR_INC;
 			  field_expr.val.func.type  = PROTO_FIELD_FUNC_INC;
 			  field_expr.val.func.type |= PROTO_FIELD_FUNC_MIN;
 			  field_expr.val.func.min = $3;
 			  field_expr.val.func.max = $5;
 			  field_expr.val.func.inc = 1; }
 	| K_DINC '(' number delimiter number delimiter number ')'
-			{ field_expr.type = FIELD_EXPR_INC;
+			{ field_expr.type |= FIELD_EXPR_INC;
 			  field_expr.val.func.type  = PROTO_FIELD_FUNC_INC;
 			  field_expr.val.func.type |= PROTO_FIELD_FUNC_MIN;
 			  field_expr.val.func.min = $3;
 			  field_expr.val.func.max = $5;
 			  field_expr.val.func.inc = $7; }
-	| K_DRND '(' ')' { field_expr.type = FIELD_EXPR_RND;
+	| K_DRND '(' ')' { field_expr.type |= FIELD_EXPR_RND;
 			  field_expr.val.func.type = PROTO_FIELD_FUNC_RND; }
 	| K_DRND '(' number delimiter number ')'
-			{ field_expr.type = FIELD_EXPR_RND;
+			{ field_expr.type |= FIELD_EXPR_RND;
 			  field_expr.val.func.type = PROTO_FIELD_FUNC_RND;
 			  field_expr.val.func.min = $3;
 			  field_expr.val.func.max = $5; }
@@ -783,7 +821,9 @@ eth_field
 	| eth_type { proto_field_set(ETH_TYPE); }
 
 eth_expr
-	: eth_field skip_white '=' skip_white field_expr
+	: eth_field field_expr skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| eth_field skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
 	;
 
@@ -807,7 +847,9 @@ pause_field
 	;
 
 pause_expr
-	: pause_field skip_white '=' skip_white field_expr
+	: pause_field field_expr skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| pause_field skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
 	;
 
@@ -843,7 +885,9 @@ pfc_field
 	;
 
 pfc_expr
-	: pfc_field skip_white '=' skip_white field_expr
+	: pfc_field field_expr skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| pfc_field skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
 	;
 
@@ -875,12 +919,14 @@ vlan_field
 	;
 
 vlan_expr
-	: vlan_field skip_white '=' skip_white field_expr
+	: vlan_field field_expr skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| vlan_field skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
 	| K_1Q
-		{ proto_field_set_be16(hdr, VLAN_TPID, ETH_P_8021Q); }
+		{ proto_hdr_field_set_be16(hdr, VLAN_TPID, ETH_P_8021Q); }
 	| K_1AD
-		{ proto_field_set_be16(hdr, VLAN_TPID, ETH_P_8021AD); }
+		{ proto_hdr_field_set_be16(hdr, VLAN_TPID, ETH_P_8021AD); }
 	;
 
 mpls_proto
@@ -910,7 +956,9 @@ mpls_field
 	;
 
 mpls_expr
-	: mpls_field skip_white '=' skip_white field_expr
+	: mpls_field field_expr skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| mpls_field skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
 
 arp_proto
@@ -939,19 +987,24 @@ arp_field
 	;
 
 arp_expr
-	: arp_field skip_white '=' skip_white field_expr
+	: arp_field field_expr skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
-	| K_OPER skip_white '=' skip_white field_expr
+	| arp_field skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| K_OPER field_expr skip_white '=' skip_white field_value_expr
+		{ proto_field_set(ARP_OPER);
+		  proto_field_expr_eval(); }
+	| K_OPER skip_white '=' skip_white field_value_expr
 		{ proto_field_set(ARP_OPER);
 		  proto_field_expr_eval(); }
 	| K_OPER skip_white '=' skip_white K_REQUEST
-		{ proto_field_set_be16(hdr, ARP_OPER, ARPOP_REQUEST); }
+		{ proto_hdr_field_set_be16(hdr, ARP_OPER, ARPOP_REQUEST); }
 	| K_OPER skip_white '=' skip_white K_REPLY
-		{ proto_field_set_be16(hdr, ARP_OPER, ARPOP_REPLY); }
+		{ proto_hdr_field_set_be16(hdr, ARP_OPER, ARPOP_REPLY); }
 	| K_REQUEST
-		{ proto_field_set_be16(hdr, ARP_OPER, ARPOP_REQUEST); }
+		{ proto_hdr_field_set_be16(hdr, ARP_OPER, ARPOP_REQUEST); }
 	| K_REPLY
-		{ proto_field_set_be16(hdr, ARP_OPER, ARPOP_REPLY); }
+		{ proto_hdr_field_set_be16(hdr, ARP_OPER, ARPOP_REPLY); }
 	;
 arp
 	: K_ARP	{ proto_add(PROTO_ARP); }
@@ -985,10 +1038,12 @@ ip4_field
 	;
 
 ip4_expr
-	: ip4_field skip_white '=' skip_white field_expr
+	: ip4_field field_expr skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
-	| K_DF  { proto_field_set_be16(hdr, IP4_DF, 1); }
-	| K_MF  { proto_field_set_be16(hdr, IP4_MF, 1); }
+	| ip4_field skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| K_DF  { proto_hdr_field_set_be16(hdr, IP4_DF, 1); }
+	| K_MF  { proto_hdr_field_set_be16(hdr, IP4_MF, 1); }
 	;
 
 ip4
@@ -1022,7 +1077,9 @@ ip6_field
 	;
 
 ip6_expr
-	: ip6_field skip_white '=' skip_white field_expr
+	: ip6_field field_expr skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| ip6_field skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
 	;
 
@@ -1050,14 +1107,16 @@ icmp4_field
 	;
 
 icmp4_expr
-	: icmp4_field skip_white '=' skip_white field_expr
+	: icmp4_field field_expr skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| icmp4_field skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
 	| K_ECHO_REQUEST
-		{ proto_field_set_u8(hdr, ICMPV4_TYPE, ICMP_ECHO);
-		  proto_field_set_u8(hdr, ICMPV4_CODE, 0); }
+		{ proto_hdr_field_set_u8(hdr, ICMPV4_TYPE, ICMP_ECHO);
+		  proto_hdr_field_set_u8(hdr, ICMPV4_CODE, 0); }
 	| K_ECHO_REPLY
-		{ proto_field_set_u8(hdr, ICMPV4_TYPE, ICMP_ECHOREPLY);
-		  proto_field_set_u8(hdr, ICMPV4_CODE, 0); }
+		{ proto_hdr_field_set_u8(hdr, ICMPV4_TYPE, ICMP_ECHOREPLY);
+		  proto_hdr_field_set_u8(hdr, ICMPV4_CODE, 0); }
 	;
 
 icmp4
@@ -1079,19 +1138,24 @@ icmp6_field
 	;
 
 icmp6_expr
-	: icmp6_field skip_white '=' skip_white field_expr
+	: icmp6_field field_expr skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
-	| K_TYPE skip_white '=' skip_white field_expr
+	| icmp6_field skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| K_TYPE field_expr skip_white '=' skip_white field_value_expr
+		{ proto_field_set(ICMPV6_TYPE);
+		  proto_field_expr_eval(); }
+	| K_TYPE skip_white '=' skip_white field_value_expr
 		{ proto_field_set(ICMPV6_TYPE);
 		  proto_field_expr_eval(); }
 	| K_TYPE skip_white '=' K_ECHO_REQUEST
-		{ proto_field_set_u8(hdr, ICMPV6_TYPE, ICMPV6_ECHO_REQUEST); }
+		{ proto_hdr_field_set_u8(hdr, ICMPV6_TYPE, ICMPV6_ECHO_REQUEST); }
 	| K_ECHO_REQUEST
-		{ proto_field_set_u8(hdr, ICMPV6_TYPE, ICMPV6_ECHO_REQUEST); }
+		{ proto_hdr_field_set_u8(hdr, ICMPV6_TYPE, ICMPV6_ECHO_REQUEST); }
 	| K_TYPE skip_white '=' K_ECHO_REPLY
-		{ proto_field_set_u8(hdr, ICMPV6_TYPE, ICMPV6_ECHO_REPLY); }
+		{ proto_hdr_field_set_u8(hdr, ICMPV6_TYPE, ICMPV6_ECHO_REPLY); }
 	| K_ECHO_REPLY
-		{ proto_field_set_u8(hdr, ICMPV6_TYPE, ICMPV6_ECHO_REPLY); }
+		{ proto_hdr_field_set_u8(hdr, ICMPV6_TYPE, ICMPV6_ECHO_REPLY); }
 	;
 icmp6
 	: K_ICMP6 { proto_add(PROTO_ICMP6); }
@@ -1115,7 +1179,9 @@ udp_field
 	;
 
 udp_expr
-	: udp_field skip_white '=' skip_white field_expr
+	: udp_field field_expr skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| udp_field skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
 	;
 
@@ -1145,16 +1211,18 @@ tcp_field
 	;
 
 tcp_expr
-	: tcp_field skip_white '=' skip_white field_expr
+	: tcp_field field_expr skip_white '=' skip_white field_value_expr
 		{ proto_field_expr_eval(); }
-	| K_CWR { proto_field_set_be16(hdr, TCP_CWR, 1); }
-	| K_ECE { proto_field_set_be16(hdr, TCP_ECE, 1); }
-	| K_URG { proto_field_set_be16(hdr, TCP_URG, 1); }
-	| K_ACK { proto_field_set_be16(hdr, TCP_ACK, 1); }
-	| K_PSH { proto_field_set_be16(hdr, TCP_PSH, 1); }
-	| K_RST { proto_field_set_be16(hdr, TCP_RST, 1); }
-	| K_SYN { proto_field_set_be16(hdr, TCP_SYN, 1); }
-	| K_FIN { proto_field_set_be16(hdr, TCP_FIN, 1); }
+	| tcp_field skip_white '=' skip_white field_value_expr
+		{ proto_field_expr_eval(); }
+	| K_CWR { proto_hdr_field_set_be16(hdr, TCP_CWR, 1); }
+	| K_ECE { proto_hdr_field_set_be16(hdr, TCP_ECE, 1); }
+	| K_URG { proto_hdr_field_set_be16(hdr, TCP_URG, 1); }
+	| K_ACK { proto_hdr_field_set_be16(hdr, TCP_ACK, 1); }
+	| K_PSH { proto_hdr_field_set_be16(hdr, TCP_PSH, 1); }
+	| K_RST { proto_hdr_field_set_be16(hdr, TCP_RST, 1); }
+	| K_SYN { proto_hdr_field_set_be16(hdr, TCP_SYN, 1); }
+	| K_FIN { proto_hdr_field_set_be16(hdr, TCP_FIN, 1); }
 	;
 
 tcp
@@ -1225,6 +1293,10 @@ void cleanup_packets(void)
 	for (i = 0; i < dlen; ++i) {
 		free(packet_dyn[i].cnt);
 		free(packet_dyn[i].rnd);
+
+		for (j = 0; j < packet_dyn[j].flen; j++)
+			xfree(packet_dyn[i].fields[j]);
+
 		free(packet_dyn[i].fields);
 	}
 
