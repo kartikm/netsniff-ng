@@ -185,31 +185,31 @@ static void __noreturn help(void)
 	puts("http://www.netsniff-ng.org\n\n"
 	     "Usage: trafgen [options] [packet]\n"
 	     "Options:\n"
-	     "  -i|-c|--in|--conf <cfg/->      Packet configuration file/stdin\n"
-	     "  -o|-d|--out|--dev <netdev>     Networking device i.e., eth0\n"
-	     "  -p|--cpp                       Run packet config through C preprocessor\n"
-	     "  -D|--define                    Add macro/define for C preprocessor\n"
-	     "  -J|--jumbo-support             Support 64KB super jumbo frames (def: 2048B)\n"
-	     "  -R|--rfraw                     Inject raw 802.11 frames\n"
-	     "  -s|--smoke-test <ipv4>         Probe if machine survived fuzz-tested packet\n"
-	     "  -n|--num <uint>                Number of packets until exit (def: 0)\n"
-	     "  -r|--rand                      Randomize packet selection (def: round robin)\n"
-	     "  -P|--cpus <uint>               Specify number of forks(<= CPUs) (def: #CPUs)\n"
-	     "  -t|--gap <time>                Set approx. interpacket gap (s/ms/us/ns, def: us)\n"
-	     "  -b|--rate <rate>               Send traffic at specified rate (pps/B/kB/MB/GB/kbit/Mbit/Gbit/KiB/MiB/GiB)\n"
-	     "  -S|--ring-size <size>          Manually set mmap size (KiB/MiB/GiB)\n"
-	     "  -E|--seed <uint>               Manually set srand(3) seed\n"
-	     "  -u|--user <userid>             Drop privileges and change to userid\n"
-	     "  -g|--group <groupid>           Drop privileges and change to groupid\n"
-	     "  -H|--prio-high                 Make this high priority process\n"
-	     "  -A|--no-sock-mem               Don't tune core socket memory\n"
-	     "  -Q|--notouch-irq               Do not touch IRQ CPU affinity of NIC\n"
-	     "  -q|--qdisc-path                Enable qdisc kernel path (default off since 3.14)\n"
-	     "  -V|--verbose                   Be more verbose\n"
-	     "  -C|--no-cpu-stats              Do not print CPU time statistics on exit\n"
-	     "  -v|--version                   Show version and exit\n"
-	     "  -e|--example                   Show built-in packet config example\n"
-	     "  -h|--help                      Guess what?!\n\n"
+	     "  -i|-c|--in|--conf <cfg/->             Packet configuration file/stdin\n"
+	     "  -o|-d|--out|--dev <netdev|.cfg|.pcap> Networking device or configuration file i.e., eth0\n"
+	     "  -p|--cpp                              Run packet config through C preprocessor\n"
+	     "  -D|--define                           Add macro/define for C preprocessor\n"
+	     "  -J|--jumbo-support                    Support 64KB super jumbo frames (def: 2048B)\n"
+	     "  -R|--rfraw                            Inject raw 802.11 frames\n"
+	     "  -s|--smoke-test <ipv4>                Probe if machine survived fuzz-tested packet\n"
+	     "  -n|--num <uint>                       Number of packets until exit (def: 0)\n"
+	     "  -r|--rand                             Randomize packet selection (def: round robin)\n"
+	     "  -P|--cpus <uint>                      Specify number of forks(<= CPUs) (def: #CPUs)\n"
+	     "  -t|--gap <time>                       Set approx. interpacket gap (s/ms/us/ns, def: us)\n"
+	     "  -b|--rate <rate>                      Send traffic at specified rate (pps/B/kB/MB/GB/kbit/Mbit/Gbit/KiB/MiB/GiB)\n"
+	     "  -S|--ring-size <size>                 Manually set mmap size (KiB/MiB/GiB)\n"
+	     "  -E|--seed <uint>                      Manually set srand(3) seed\n"
+	     "  -u|--user <userid>                    Drop privileges and change to userid\n"
+	     "  -g|--group <groupid>                  Drop privileges and change to groupid\n"
+	     "  -H|--prio-high                        Make this high priority process\n"
+	     "  -A|--no-sock-mem                      Don't tune core socket memory\n"
+	     "  -Q|--notouch-irq                      Do not touch IRQ CPU affinity of NIC\n"
+	     "  -q|--qdisc-path                       Enable qdisc kernel path (default off since 3.14)\n"
+	     "  -V|--verbose                          Be more verbose\n"
+	     "  -C|--no-cpu-stats                     Do not print CPU time statistics on exit\n"
+	     "  -v|--version                          Show version and exit\n"
+	     "  -e|--example                          Show built-in packet config example\n"
+	     "  -h|--help                             Guess what?!\n\n"
 	     "Examples:\n"
 	     "  trafgen --dev eth0 --conf trafgen.cfg\n"
 	     "  trafgen -e | trafgen -i - -o eth0 --cpp -n 1\n"
@@ -684,7 +684,7 @@ static void xmit_slowpath_or_die(struct ctx *ctx, unsigned int cpu, unsigned lon
 	while (likely(sigint == 0 && num > 0 && plen > 0)) {
 		packet_apply_dyn_elements(i);
 retry:
-		ret = dev_io_write(ctx->dev_out, packets[i].payload, packets[i].len);
+		ret = dev_io_write(ctx->dev_out, &packets[i]);
 		if (unlikely(ret < 0)) {
 			if (errno == ENOBUFS) {
 				sched_yield();
@@ -937,27 +937,10 @@ static void xmit_packet_precheck(struct ctx *ctx, unsigned int cpu)
 
 static void pcap_load_packets(struct dev_io *dev)
 {
-	struct timespec tstamp;
-	size_t buf_len;
-	uint8_t *buf;
-	int pkt_len;
+	struct packet *pkt;
 
-	buf_len = round_up(1024 * 1024, RUNTIME_PAGE_SIZE);
-	buf = xmalloc_aligned(buf_len, CO_CACHE_LINE_SIZE);
-
-	while ((pkt_len = dev_io_read(dev, buf, buf_len, &tstamp)) > 0) {
-		struct packet *pkt;
-
-		realloc_packet();
-
-		pkt = current_packet();
-		pkt->len = pkt_len;
-		pkt->payload = xzmalloc(pkt_len);
-		memcpy(pkt->payload, buf, pkt_len);
-		memcpy(&pkt->tstamp, &tstamp, sizeof(tstamp));
-	}
-
-	free(buf);
+	while ((pkt = dev_io_read(dev)) != 0)
+		/* nothing to do */;
 }
 
 static void main_loop(struct ctx *ctx, char *confname, bool slow,
@@ -1301,8 +1284,8 @@ int main(int argc, char **argv)
 
 	protos_init(ctx.dev_out);
 
-	if (shaper_is_set(&ctx.sh) || (ctx.dev_in && dev_io_is_pcap(ctx.dev_in))
-	    || dev_io_is_pcap(ctx.dev_out)) {
+	if (shaper_is_set(&ctx.sh) || (ctx.dev_in && !dev_io_is_netdev(ctx.dev_in))
+	    || !dev_io_is_netdev(ctx.dev_out)) {
 
 		prctl(PR_SET_TIMERSLACK, 1UL);
 		/* Fall back to single core to not mess up correct timing.

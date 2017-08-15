@@ -167,10 +167,12 @@ static inline void __setup_new_csum16(struct csum16 *s, off_t from, off_t to,
 	s->which = which;
 }
 
-void realloc_packet(void)
+struct packet *realloc_packet(void)
 {
+	uint32_t i;
+
 	if (test_ignore())
-		return;
+		return NULL;
 
 	plen++;
 	packets = xrealloc(packets, plen * sizeof(*packets));
@@ -184,6 +186,11 @@ void realloc_packet(void)
 	__init_new_randomizer_slot(&packet_dyn[packetd_last]);
 	__init_new_csum_slot(&packet_dyn[packetd_last]);
 	__init_new_fields_slot(&packet_dyn[packetd_last]);
+
+	for (i = 0; i < plen; i++)
+		packets[i].id = i;
+
+	return &packets[packet_last];
 }
 
 struct packet *current_packet(void)
