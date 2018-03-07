@@ -343,7 +343,7 @@ static void apply_csum16(int id)
 		uint16_t sum = 0;
 		struct csum16 *csum = &packet_dyn[id].csum[j];
 
-		fmemset(&packets[id].payload[csum->off], 0, sizeof(sum));
+		memset(&packets[id].payload[csum->off], 0, sizeof(sum));
 		if (unlikely((size_t) csum->to >= packets[id].len))
 			csum->to = packets[id].len - 1;
 
@@ -381,7 +381,7 @@ static void apply_csum16(int id)
 			break;
 		}
 
-		fmemcpy(&packets[id].payload[csum->off], &sum, sizeof(sum));
+		memcpy(&packets[id].payload[csum->off], &sum, sizeof(sum));
 	}
 }
 
@@ -490,7 +490,7 @@ static int xmit_smoke_probe(int icmp_sock, struct ctx *ctx)
 		.events = POLLIN,
 	};
 
-	fmemset(idstore, 0, sizeof(idstore));
+	memset(idstore, 0, sizeof(idstore));
 	for (j = 0; j < SMOKE_N_PROBES; j++) {
 		while ((ident = htons((short) rand())) == 0)
 			sleep(0);
@@ -776,7 +776,7 @@ static void xmit_fastpath_or_die(struct ctx *ctx, unsigned int cpu, unsigned lon
 
 		packet_apply_dyn_elements(i);
 
-		fmemcpy(out, packets[i].payload, packets[i].len);
+		memcpy(out, packets[i].payload, packets[i].len);
 
 		tx_bytes += packets[i].len;
 		tx_packets++;
@@ -976,6 +976,10 @@ static void main_loop(struct ctx *ctx, char *confname, bool slow,
 	else
 		xmit_fastpath_or_die(ctx, cpu, orig_num);
 
+	dev_io_close(ctx->dev_out);
+	if (ctx->dev_in)
+		dev_io_close(ctx->dev_in);
+
 	cleanup_packets();
 }
 
@@ -1017,7 +1021,7 @@ int main(int argc, char **argv)
 	enum shaper_type shape_type;
 	struct timespec delay;
 
-	fmemset(&ctx, 0, sizeof(ctx));
+	memset(&ctx, 0, sizeof(ctx));
 	ctx.cpus = get_number_cpus_online();
 	ctx.uid = getuid();
 	ctx.gid = getgid();
@@ -1353,10 +1357,6 @@ thread_out:
 	destroy_shared_var(stats, ctx.cpus);
 	if (dev_io_is_netdev(ctx.dev_out) && set_irq_aff)
 		device_restore_irq_affinity_list();
-
-	dev_io_close(ctx.dev_out);
-	if (ctx.dev_in)
-		dev_io_close(ctx.dev_in);
 
 	argv_free(cpp_argv);
 	free(ctx.device);
